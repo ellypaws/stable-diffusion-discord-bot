@@ -1,206 +1,282 @@
 package imagine_queue
 
 import (
-	"encoding/json"
-	"github.com/SpenserCai/sd-webui-discord/utils"
+	"bytes"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"github.com/bwmarrin/discordgo"
 	"log"
 	"stable_diffusion_bot/discord_bot/handlers"
 	"stable_diffusion_bot/entities"
+	"stable_diffusion_bot/stable_diffusion_api"
+	"strings"
 	"time"
 )
 
-func (q *queueImplementation) processCurrentImagine() {
+func (q *queueImplementation) processImagineGrid(c *entities.QueueItem) error {
+	newGeneration := &c.ImageGenerationRequest
+	config, err := q.stableDiffusionAPI.GetConfig()
+	originalConfig := config
+	if err != nil {
+		log.Printf("Error getting config: %v", err)
+		return err
+	} else {
+		config, err = q.updateModels(newGeneration, c, config)
+		if err != nil {
+			return err
+		}
+	}
+
+	log.Printf("Processing imagine #%s: %v\n", c.DiscordInteraction.ID, newGeneration.Prompt)
+
+	newContent := imagineMessageSimple(newGeneration, c.DiscordInteraction.Member.User, 0)
+
+	embed := generationEmbedDetails(&discordgo.MessageEmbed{}, newGeneration, c, c.Interrupt != nil)
+
+	webhook := &discordgo.WebhookEdit{
+		Content:    &newContent,
+		Components: &[]discordgo.MessageComponent{handlers.Components[handlers.Interrupt]},
+		Embeds:     &[]*discordgo.MessageEmbed{embed},
+	}
+
+	message, err := q.botSession.InteractionResponseEdit(c.DiscordInteraction, webhook)
+	if err != nil {
+		log.Printf("Error editing interaction: %v", err)
+		return err
+	}
+
+	// store message ID in c.DiscordInteraction.Message
+	if c.DiscordInteraction != nil && c.DiscordInteraction.Message == nil && message != nil {
+		log.Printf("Setting c.DiscordInteraction.Message to message: %v", message)
+		c.DiscordInteraction.Message = message
+	}
+
+	newGeneration.InteractionID = c.DiscordInteraction.ID
+	newGeneration.MessageID = message.ID
+	newGeneration.MemberID = c.DiscordInteraction.Member.User.ID
+	newGeneration.SortOrder = 0
+	newGeneration.Processed = true
+
+	var ok bool
+	if newGeneration.Prompt, ok = strings.CutSuffix(newGeneration.Prompt, "{DEBUG}"); ok {
+		byteArr, _ := newGeneration.TextToImageRequest.Marshal()
+		log.Printf("{DEBUG} TextToImageRequest: %v", string(byteArr))
+	}
+
+	// return newGeneration from image_generations.Create as we need newGeneration.CreatedAt later on
+	newGeneration, err = q.imageGenerationRepo.Create(context.Background(), newGeneration)
+	if err != nil {
+		log.Printf("Error creating image generation record: %v\n", err)
+		return err
+	}
+
+	generationDone := make(chan bool)
+
 	go func() {
-		defer q.done()
-
-		if q.currentImagine.Type == ItemTypeUpscale {
-			q.processUpscaleImagine(q.currentImagine)
-			return
-		}
-
-		c := q.currentImagine
-
-		newGeneration, err := &entities.ImageGenerationRequest{
-			GenerationInfo: entities.GenerationInfo{
-				Processed:    false,
-				Checkpoint:   c.Checkpoint,
-				VAE:          c.VAE,
-				Hypernetwork: c.Hypernetwork,
-			},
-			TextToImageRequest: &entities.TextToImageRequest{
-				Prompt:            c.Prompt,
-				NegativePrompt:    c.NegativePrompt,
-				Width:             initializedWidth,
-				Height:            initializedHeight,
-				RestoreFaces:      c.RestoreFaces,
-				EnableHr:          c.UseHiresFix,
-				HrScale:           between(c.HiresUpscaleRate, 1.0, 2.0),
-				HrUpscaler:        "R-ESRGAN 2x+",
-				HrSecondPassSteps: c.HiresSteps,
-				HrResizeX:         initializedWidth,
-				HrResizeY:         initializedHeight,
-				DenoisingStrength: c.DenoisingStrength,
-				Seed:              c.Seed,
-				Subseed:           -1,
-				SubseedStrength:   0,
-				SamplerName:       c.SamplerName1,
-				CFGScale:          c.CfgScale,
-				Steps:             c.Steps,
-				NIter:             c.BatchCount,
-				BatchSize:         c.BatchSize,
-				AlwaysonScripts: &entities.Scripts{
-					CFGRescale: c.CFGRescale,
-				},
-			},
-		}, error(nil)
-
-		newGeneration.Width, err = q.defaultWidth()
-		if err != nil {
-			log.Printf("Error getting default width: %v", err)
-		}
-
-		newGeneration.Height, err = q.defaultHeight()
-		if err != nil {
-			log.Printf("Error getting default height: %v", err)
-		}
-
-		// add optional parameter: Negative prompt
-		if c.NegativePrompt == "" {
-			newGeneration.NegativePrompt = defaultNegative
-		}
-
-		// add optional parameter: sampler
-		if c.SamplerName1 == "" {
-			newGeneration.SamplerName = "Euler a"
-		}
-
-		defaultWidth := newGeneration.Width
-		defaultHeight := newGeneration.Height
-		if c.AspectRatio != "" && c.AspectRatio != "1:1" {
-			newGeneration.Width, newGeneration.Height = aspectRatioCalculation(c.AspectRatio, defaultWidth, defaultHeight)
-		}
-
-		// extract --zoom parameter
-		adjustedWidth := newGeneration.Width
-		adjustedHeight := newGeneration.Height
-		if newGeneration.EnableHr && newGeneration.HrScale > 1.0 {
-			newGeneration.HrResizeX = int(float64(adjustedWidth) * newGeneration.HrScale)
-			newGeneration.HrResizeY = int(float64(adjustedHeight) * newGeneration.HrScale)
-		} else {
-			newGeneration.EnableHr = false
-			newGeneration.HrResizeX = adjustedWidth
-			newGeneration.HrResizeY = adjustedHeight
-		}
-
-		config, err := q.stableDiffusionAPI.GetConfig()
-		if err != nil {
-			log.Printf("Error getting config: %v", err)
-		} else {
-			if !ptrStringNotBlank(newGeneration.Checkpoint) {
-				newGeneration.Checkpoint = config.SDModelCheckpoint
-			}
-			if !ptrStringNotBlank(newGeneration.VAE) {
-				newGeneration.VAE = config.SDVae
-			}
-			if !ptrStringNotBlank(newGeneration.Hypernetwork) {
-				newGeneration.Hypernetwork = config.SDHypernetwork
-			}
-		}
-
-		if c.ADetailerString != "" {
-			log.Printf("q.currentImagine.ADetailerString: %v", c.ADetailerString)
-
-			newGeneration.NewADetailer()
-
-			newGeneration.AlwaysonScripts.ADetailer.AppendSegModelByString(c.ADetailerString, newGeneration)
-		}
-
-		if c.ControlnetItem.Enabled {
-			log.Printf("q.currentImagine.ControlnetItem.Enabled: %v", c.ControlnetItem.Enabled)
-
-			if newGeneration.AlwaysonScripts == nil {
-				newGeneration.NewScripts()
-			}
-			var controlnetImage *string
-			switch {
-			case c.ControlnetItem.MessageAttachment != nil && c.ControlnetItem.Image != nil:
-				controlnetImage = c.ControlnetItem.Image
-			case c.Img2ImgItem.MessageAttachment != nil && c.Img2ImgItem.Image != nil:
-				// not needed for Img2Img as it automatically uses it if InputImage is null, only used for width/height
-				controlnetImage = c.Img2ImgItem.Image
-			default:
-				c.Enabled = false
-			}
-			width, height, err := utils.GetImageSizeFromBase64(safeDereference(controlnetImage))
-			var controlnetResolution int
-			if err != nil {
-				log.Printf("Error getting image size: %v", err)
-			} else {
-				controlnetResolution = between(max(width, height), min(newGeneration.Width, newGeneration.Height), 1024)
-			}
-
-			newGeneration.AlwaysonScripts.ControlNet = &entities.ControlNet{
-				Args: []*entities.ControlNetParameters{
-					{
-						InputImage:   controlnetImage,
-						Module:       c.ControlnetItem.Preprocessor,
-						Model:        c.ControlnetItem.Model,
-						Weight:       1.0,
-						ResizeMode:   c.ControlnetItem.ResizeMode,
-						ProcessorRes: controlnetResolution,
-						ControlMode:  c.ControlnetItem.ControlMode,
-						PixelPerfect: false,
-					},
-				},
-			}
-			if c.Type == ItemTypeImg2Img && c.ControlnetItem.MessageAttachment == nil {
-				// controlnet will automatically use img2img if it is null
-				newGeneration.AlwaysonScripts.ControlNet.Args[0].InputImage = nil
-			}
-
-			if !c.Enabled {
-				newGeneration.AlwaysonScripts.ControlNet = nil
-			}
-		}
-
-		if newGeneration.AlwaysonScripts != nil && newGeneration.AlwaysonScripts.ADetailer != nil {
-			jsonMarshalScripts, err := json.MarshalIndent(&newGeneration.AlwaysonScripts.ADetailer, "", "  ")
-			if err != nil {
-				log.Printf("Error marshalling scripts: %v", err)
-			} else {
-				log.Println("Final scripts (Adetailer): ", string(jsonMarshalScripts))
-			}
-		}
-
-		switch c.Type {
-		case ItemTypeReroll, ItemTypeVariation:
-			foundGeneration, err := q.getPreviousGeneration(c, c.InteractionIndex)
-			if err != nil {
-				log.Printf("Error getting prompt for reroll: %v", err)
-				handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, err)
+		for {
+			select {
+			case c.DiscordInteraction = <-c.Interrupt:
+				err := q.stableDiffusionAPI.Interrupt()
+				if err != nil {
+					handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, fmt.Sprintf("Error interrupting: %v", err))
+					return
+				}
+				message := handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, c.DiscordInteraction, "Generation Interrupted", webhook, handlers.Components[handlers.DeleteGeneration])
+				if c.DiscordInteraction.Message == nil && message != nil {
+					log.Printf("Setting c.DiscordInteraction.Message to message from channel c.Interrupt: %v", message)
+					c.DiscordInteraction.Message = message
+				}
+			case <-generationDone:
+				err := q.revertModels(config, originalConfig)
+				if err != nil {
+					handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, fmt.Sprintf("Error reverting models: %v", err))
+				}
 				return
+			case <-time.After(1 * time.Second):
+				progress, progressErr := q.stableDiffusionAPI.GetCurrentProgress()
+				if progressErr != nil {
+					log.Printf("Error getting current progress: %v", progressErr)
+					handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, fmt.Sprintf("Error getting current progress: %v", progressErr))
+
+					return
+				}
+
+				if progress.Progress == 0 {
+					continue
+				}
+
+				progressContent := imagineMessageSimple(newGeneration, c.DiscordInteraction.Member.User, progress.Progress)
+
+				_, progressErr = q.botSession.InteractionResponseEdit(c.DiscordInteraction, &discordgo.WebhookEdit{
+					Content: &progressContent,
+				})
+				if progressErr != nil {
+					log.Printf("Error editing interaction: %v", err)
+				}
 			}
-
-			// if we are rerolling, or generating variations, we simply replace some defaults
-			newGeneration = foundGeneration
-
-			// for variations, we need random subseeds
-			newGeneration.Subseed = -1
-
-			// for variations, the subseed strength determines how much variation we get
-			if c.Type == ItemTypeVariation {
-				newGeneration.SubseedStrength = 0.15
-			}
-
-			// set the time to now since time from database is from the past
-			newGeneration.CreatedAt = time.Now()
-		}
-
-		err = q.processImagineGrid(newGeneration, c)
-		if err != nil {
-			log.Printf("Error processing imagine grid: %v", err)
-			handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, err)
-			return
 		}
 	}()
+
+	switch c.Type {
+	case ItemTypeImagine, ItemTypeReroll, ItemTypeVariation, ItemTypeRaw:
+		var resp *stable_diffusion_api.TextToImageResponse
+		var err error
+		switch c.Type {
+		case ItemTypeRaw:
+			if q.currentImagine.Raw.Unsafe {
+				resp, err = q.stableDiffusionAPI.TextToImageRaw(q.currentImagine.Raw.Blob)
+			} else {
+				marshal, marshalErr := q.currentImagine.Raw.Marshal()
+				if marshalErr != nil {
+					log.Printf("Error marshalling raw: %v", marshalErr)
+					return marshalErr
+				}
+				resp, err = q.stableDiffusionAPI.TextToImageRaw(marshal)
+			}
+		default:
+			resp, err = q.stableDiffusionAPI.TextToImageRequest(newGeneration.TextToImageRequest)
+		}
+
+		generationDone <- true
+
+		if err != nil || resp == nil {
+			log.Printf("Error processing image: %v\n", err)
+			return err
+		}
+
+		// get new embed from generationEmbedDetails as q.imageGenerationRepo.Create has filled in newGeneration.CreatedAt and interrupted
+		embed = generationEmbedDetails(embed, newGeneration, c, c.Interrupt != nil)
+
+		log.Printf("Seeds: %v Subseeds:%v", resp.Seeds, resp.Subseeds)
+
+		imageBufs := make([]*bytes.Buffer, len(resp.Images))
+
+		for idx, image := range resp.Images {
+			decodedImage, decodeErr := base64.StdEncoding.DecodeString(image)
+			if decodeErr != nil {
+				log.Printf("Error decoding image: %v\n", decodeErr)
+			}
+
+			imageBufs[idx] = bytes.NewBuffer(decodedImage)
+		}
+
+		for idx := range resp.Seeds {
+			subGeneration := newGeneration
+			subGeneration.SortOrder = idx + 1
+			subGeneration.Seed = resp.Seeds[idx]
+			subGeneration.Subseed = int64(resp.Subseeds[idx])
+			subGeneration.Checkpoint = config.SDModelCheckpoint
+			subGeneration.VAE = config.SDVae
+			subGeneration.Hypernetwork = config.SDHypernetwork
+
+			_, createErr := q.imageGenerationRepo.Create(context.Background(), subGeneration)
+			if createErr != nil {
+				log.Printf("Error creating image generation record: %v\n", createErr)
+			}
+		}
+
+		var thumbnailBuffers []*bytes.Buffer
+
+		if c.ControlnetItem.MessageAttachment != nil {
+			decodedBytes, err := base64.StdEncoding.DecodeString(safeDereference(c.ControlnetItem.MessageAttachment.Image))
+			if err != nil {
+				log.Printf("Error decoding image: %v\n", err)
+			}
+			thumbnailBuffers = append(thumbnailBuffers, bytes.NewBuffer(decodedBytes))
+		}
+
+		const maxImages = 4
+		if newGeneration.BatchSize == 0 {
+			log.Printf("Warning: newGeneration.Batchsize == 0")
+			newGeneration.BatchSize = between(newGeneration.BatchSize, 1, maxImages)
+		}
+		if newGeneration.NIter == 0 {
+			log.Printf("Warning: newGeneration.NIter == 0")
+			newGeneration.NIter = between(newGeneration.NIter, 1, maxImages/newGeneration.BatchSize)
+		}
+
+		totalImages := newGeneration.NIter * newGeneration.BatchSize
+
+		if len(imageBufs) > totalImages {
+			log.Printf("received extra images: len(imageBufs): %v, controlnet: %v", len(imageBufs), c.ControlnetItem.Enabled)
+			thumbnailBuffers = append(thumbnailBuffers, imageBufs[totalImages:]...)
+		}
+
+		mention := fmt.Sprintf("<@%v>", c.DiscordInteraction.Member.User.ID)
+
+		webhook = &discordgo.WebhookEdit{
+			Content:    &mention,
+			Embeds:     &[]*discordgo.MessageEmbed{embed},
+			Components: rerollVariationComponents(min(len(imageBufs), totalImages), c.Type == ItemTypeImg2Img),
+		}
+
+		if err := imageEmbedFromBuffers(webhook, embed, imageBufs[:min(len(imageBufs), totalImages)], thumbnailBuffers); err != nil {
+			log.Printf("Error creating image embed: %v\n", err)
+			return err
+		}
+
+		_, err = q.botSession.InteractionResponseEdit(c.DiscordInteraction, webhook)
+		if err != nil {
+			log.Printf("Error editing interaction: %v\n", err)
+			return err
+		}
+	case ItemTypeImg2Img:
+		err, done := q.imageToImage(newGeneration, c, generationDone)
+		if done {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (q *queueImplementation) revertModels(config *entities.Config, originalConfig *entities.Config) error {
+	if !ptrStringCompare(config.SDModelCheckpoint, originalConfig.SDModelCheckpoint) ||
+		!ptrStringCompare(config.SDVae, originalConfig.SDVae) ||
+		!ptrStringCompare(config.SDHypernetwork, originalConfig.SDHypernetwork) {
+		log.Printf("Switching back to original models: %v, %v, %v", originalConfig.SDModelCheckpoint, originalConfig.SDVae, originalConfig.SDHypernetwork)
+		return q.stableDiffusionAPI.UpdateConfiguration(entities.Config{
+			SDModelCheckpoint: originalConfig.SDModelCheckpoint,
+			SDVae:             originalConfig.SDVae,
+			SDHypernetwork:    originalConfig.SDHypernetwork,
+		})
+	}
+	return nil
+}
+
+func (q *queueImplementation) updateModels(newGeneration *entities.ImageGenerationRequest, c *entities.QueueItem, config *entities.Config) (*entities.Config, error) {
+	if !ptrStringCompare(newGeneration.Checkpoint, config.SDModelCheckpoint) ||
+		!ptrStringCompare(newGeneration.VAE, config.SDVae) ||
+		!ptrStringCompare(newGeneration.Hypernetwork, config.SDHypernetwork) {
+		handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, c.DiscordInteraction,
+			fmt.Sprintf("Changing models to: \n**Checkpoint**: `%v` -> `%v`\n**VAE**: `%v` -> `%v`\n**Hypernetwork**: `%v` -> `%v`",
+				safeDereference(config.SDModelCheckpoint), safeDereference(newGeneration.Checkpoint),
+				safeDereference(config.SDVae), safeDereference(newGeneration.VAE),
+				safeDereference(config.SDHypernetwork), safeDereference(newGeneration.Hypernetwork),
+			),
+			handlers.Components[handlers.CancelDisabled])
+
+		// Insert code to update the configuration here
+		err := q.stableDiffusionAPI.UpdateConfiguration(
+			q.lookupModel(newGeneration, config,
+				[]stable_diffusion_api.Cacheable{
+					stable_diffusion_api.CheckpointCache,
+					stable_diffusion_api.VAECache,
+					stable_diffusion_api.HypernetworkCache,
+				}))
+		if err != nil {
+			log.Printf("Error updating configuration: %v", err)
+			return nil, err
+		}
+		config, err = q.stableDiffusionAPI.GetConfig()
+		if err != nil {
+			log.Printf("Error getting config: %v", err)
+			return nil, err
+		}
+		newGeneration.Checkpoint = config.SDModelCheckpoint
+		newGeneration.VAE = config.SDVae
+		newGeneration.Hypernetwork = config.SDHypernetwork
+	}
+	return config, nil
 }

@@ -16,12 +16,13 @@ import (
 // TODO: Implement separate processing for Img2Img, possibly use github.com/SpenserCai/sd-webui-go/intersvc
 // Deprecated: still using processCurrentImagine
 func (q *queueImplementation) processImg2ImgImagine() {
+	//defer q.done()
 	q.processCurrentImagine()
 }
 
-func (q *queueImplementation) imageToImage(newGeneration *entities.ImageGenerationRequest, imagine *QueueItem, generationDone chan bool) (error, bool) {
+func (q *queueImplementation) imageToImage(newGeneration *entities.ImageGenerationRequest, imagine *entities.QueueItem, generationDone chan bool) (error, bool) {
 	img2img := entities.ImageToImageRequest{
-		AlwaysonScripts:                   newGeneration.AlwaysonScripts,
+		Scripts:                           newGeneration.Scripts,
 		BatchSize:                         newGeneration.BatchSize,
 		CFGScale:                          &newGeneration.CFGScale,
 		DenoisingStrength:                 &newGeneration.DenoisingStrength,
@@ -145,6 +146,10 @@ func (q *queueImplementation) imageToImage(newGeneration *entities.ImageGenerati
 	}
 
 	const maxImages = 4
+	if newGeneration.BatchSize == 0 {
+		log.Printf("Warning: newGeneration.Batchsize == 0")
+		newGeneration.BatchSize = between(newGeneration.BatchSize, 1, maxImages)
+	}
 	if newGeneration.NIter == 0 {
 		log.Printf("Warning: newGeneration.NIter == 0")
 		newGeneration.NIter = between(newGeneration.NIter, 1, maxImages/newGeneration.BatchSize)

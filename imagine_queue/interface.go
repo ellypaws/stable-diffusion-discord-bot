@@ -6,7 +6,7 @@ import (
 )
 
 type Queue interface {
-	AddImagine(item *QueueItem) (int, error)
+	AddImagine(item *entities.QueueItem) (int, error)
 	StartPolling(botSession *discordgo.Session)
 	GetBotDefaultSettings() (*entities.DefaultSettings, error)
 	UpdateDefaultDimensions(width, height int) (*entities.DefaultSettings, error)
@@ -14,5 +14,5 @@ type Queue interface {
 	UpdateModelName(modelName string) (*entities.DefaultSettings, error) // Deprecated: No longer store the SDModelName to DefaultSettings struct, use stable_diffusion_api.GetConfig instead
 	RemoveFromQueue(messageInteraction *discordgo.MessageInteraction) error
 	Interrupt(messageInteraction *discordgo.InteractionCreate) error
-	NewQueueItem(options ...func(*QueueItem)) *QueueItem
+	NewQueueItem(options ...func(*entities.QueueItem)) *entities.QueueItem
 }

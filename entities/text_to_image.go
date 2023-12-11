@@ -18,8 +18,31 @@ func (r *TextToImageRequest) Marshal() ([]byte, error) {
 	return json.Marshal(r)
 }
 
+func UnmarshalTextToImageRaw(data []byte) (TextToImageRaw, error) {
+	var r TextToImageRaw
+	err := json.Unmarshal(data, &r)
+	return r, err
+}
+
+func (r *TextToImageRaw) Marshal() ([]byte, error) {
+	return json.Marshal(r)
+}
+
+type TextToImageRaw struct {
+	RawScripts map[string]any `json:"alwayson_scripts,omitempty"`
+	*TextToImageRequest
+	RawParams `json:"-,omitempty"`
+}
+
+type RawParams struct {
+	UseDefault bool
+	Unsafe     bool
+	Debug      bool
+	Blob       []byte
+}
+
 type TextToImageRequest struct {
-	AlwaysonScripts                   *Scripts          `json:"alwayson_scripts,omitempty"`
+	Scripts                           `json:"alwayson_scripts,omitempty"`
 	BatchSize                         int               `json:"batch_size,omitempty"`
 	CFGScale                          float64           `json:"cfg_scale,omitempty"`
 	Comments                          map[string]string `json:"comments,omitempty"`
@@ -43,7 +66,7 @@ type TextToImageRequest struct {
 	HrUpscaler                        string            `json:"hr_upscaler,omitempty"`
 	NIter                             int               `json:"n_iter,omitempty"` // Batch count
 	NegativePrompt                    string            `json:"negative_prompt,omitempty"`
-	OverrideSettings                  map[string]string `json:"override_settings,omitempty"`
+	OverrideSettings                  Config            `json:"override_settings,omitempty"`
 	OverrideSettingsRestoreAfterwards *bool             `json:"override_settings_restore_afterwards,omitempty"`
 	Prompt                            string            `json:"prompt,omitempty"`
 	RefinerCheckpoint                 *string           `json:"refiner_checkpoint,omitempty"`

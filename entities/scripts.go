@@ -12,5 +12,5 @@ func (g *ImageGeneration) NewScripts() {
 }
 
 func (g *ImageGenerationRequest) NewScripts() {
-	g.AlwaysonScripts = &Scripts{}
+	g.Scripts = Scripts{}
 }

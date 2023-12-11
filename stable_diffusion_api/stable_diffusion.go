@@ -223,6 +223,15 @@ func (api *apiImplementation) TextToImage(req *TextToImageRequest) (*TextToImage
 }
 
 func (api *apiImplementation) TextToImageRequest(req *entities.TextToImageRequest) (*TextToImageResponse, error) {
+	jsonData, err := req.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	return api.TextToImageRaw(jsonData)
+}
+
+func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, error) {
 	if !handlers.CheckAPIAlive(api.host) {
 		return nil, fmt.Errorf(handlers.DeadAPI)
 	}
@@ -230,20 +239,15 @@ func (api *apiImplementation) TextToImageRequest(req *entities.TextToImageReques
 		return nil, errors.New("missing request")
 	}
 
-	jsonData, err := req.Marshal()
+	response, err := api.POST("/sdapi/v1/txt2img", req)
 	if err != nil {
-		return nil, err
-	}
-
-	response, err := api.POST("/sdapi/v1/txt2img", jsonData)
-	if err != nil {
-		log.Printf("Error with API POST: %s", string(jsonData))
+		log.Printf("Error with API POST: %s", string(req))
 		return nil, err
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, errors.New(fmt.Sprintf("unexpected status code: %v", response.Status))
+		return nil, fmt.Errorf("unexpected status code: %v\n%v", response.Status, response.Body)
 	}
 
 	body, _ := io.ReadAll(response.Body)
@@ -427,7 +431,7 @@ func (api *apiImplementation) GetCurrentProgress() (*ProgressResponse, error) {
 	return respStruct, nil
 }
 
-// Deprecated: Use APIConfig instead
+// Deprecated: Use entities.Config instead
 type POSTConfig struct {
 	SdModelCheckpoint string `json:"sd_model_checkpoint,omitempty"`
 }
@@ -496,7 +500,7 @@ func (api *apiImplementation) POST(postURL string, jsonData []byte) (*http.Respo
 	return response, nil
 }
 
-func (api *apiImplementation) UpdateConfiguration(config APIConfig) error {
+func (api *apiImplementation) UpdateConfiguration(config entities.Config) error {
 	if !handlers.CheckAPIAlive(api.host) {
 		return fmt.Errorf(handlers.DeadAPI)
 	}

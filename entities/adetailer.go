@@ -115,10 +115,7 @@ func (g *ImageGeneration) NewADetailer() {
 }
 
 func (g *ImageGenerationRequest) NewADetailer() {
-	if g.TextToImageRequest.AlwaysonScripts == nil {
-		g.NewScripts()
-	}
-	g.TextToImageRequest.AlwaysonScripts.NewADetailerWithArgs()
+	g.TextToImageRequest.Scripts.NewADetailerWithArgs()
 }
 
 func (s *Scripts) NewADetailerWithArgs() {

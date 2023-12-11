@@ -15,14 +15,15 @@ type StableDiffusionAPI interface {
 
 	TextToImage(req *TextToImageRequest) (*TextToImageResponse, error) // Deprecated: use TextToImageRequest instead
 	TextToImageRequest(req *entities.TextToImageRequest) (*TextToImageResponse, error)
+	TextToImageRaw(req []byte) (*TextToImageResponse, error)
 	ImageToImageRequest(req *entities.ImageToImageRequest) (*entities.ImageToImageResponse, error)
 	UpscaleImage(upscaleReq *UpscaleRequest) (*UpscaleResponse, error)
 	GetCurrentProgress() (*ProgressResponse, error)
 	GetProgress() (*Progress, error)
 
-	UpdateConfiguration(config APIConfig) error
+	UpdateConfiguration(config entities.Config) error
 
-	GetConfig() (*APIConfig, error)
+	GetConfig() (*entities.Config, error)
 	GetCheckpoint() (*string, error)
 	GetVAE() (*string, error)
 	GetHypernetwork() (*string, error)

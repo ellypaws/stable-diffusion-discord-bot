@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/bwmarrin/discordgo"
 	"log"
+	"stable_diffusion_bot/discord_bot/handlers"
 	"stable_diffusion_bot/entities"
 	"strings"
 )
@@ -22,6 +23,7 @@ var (
 const (
 	helloCommand   Command = "hello"
 	refreshCommand Command = "refresh"
+	rawCommand     Command = Command(handlers.JSONInput)
 )
 
 const (
@@ -44,6 +46,7 @@ const (
 	seedOption         CommandOption = "seed"
 	batchCountOption   CommandOption = "batch_count"
 	batchSizeOption    CommandOption = "batch_size"
+	clipSkipOption     CommandOption = "clip_skip"
 	cfgRescaleOption   CommandOption = "cfg_rescale"
 
 	img2imgOption   CommandOption = "img2img"
@@ -63,6 +66,10 @@ const (
 	controlnetPreprocessor CommandOption = "controlnet_preprocessor"
 	controlnetModel        CommandOption = "controlnet_model"
 
+	jsonFile     CommandOption = "json_file"
+	useDefaults  CommandOption = "use_defaults"
+	unsafeOption CommandOption = "unsafe"
+
 	extraLoras = 2
 )
 
@@ -79,10 +86,12 @@ var commands = map[Command]*discordgo.ApplicationCommand{
 		Name:        string(imagineCommand),
 		Description: "Ask the bot to imagine something",
 		Options:     imagineOptions(),
+		Type:        discordgo.ChatApplicationCommand,
 	},
 	imagineSettingsCommand: {
 		Name:        string(imagineSettingsCommand),
 		Description: "Change the default settings for the imagine command",
+		Type:        discordgo.ChatApplicationCommand,
 	},
 	refreshCommand: {
 		Name:        string(refreshCommand),
@@ -92,6 +101,16 @@ var commands = map[Command]*discordgo.ApplicationCommand{
 			commandOptions[refreshCheckpoint],
 			commandOptions[refreshVAEOption],
 			commandOptions[refreshAllOption],
+		},
+	},
+	rawCommand: {
+		Name:        string(rawCommand),
+		Description: "Send a raw json request to the API. ",
+		Type:        discordgo.ChatApplicationCommand,
+		Options: []*discordgo.ApplicationCommandOption{
+			commandOptions[jsonFile],
+			commandOptions[useDefaults],
+			commandOptions[unsafeOption],
 		},
 	},
 }
@@ -496,6 +515,25 @@ var commandOptions = map[CommandOption]*discordgo.ApplicationCommandOption{
 		Description:  "The model to use for controlnet. Set the type to see the available models. Defaults to None",
 		Required:     false,
 		Autocomplete: true,
+	},
+
+	jsonFile: {
+		Type:        discordgo.ApplicationCommandOptionAttachment,
+		Name:        string(jsonFile),
+		Description: "The json file to use for the raw command. If not specified, a modal will be opened to paste the json",
+		Required:    false,
+	},
+	useDefaults: {
+		Type:        discordgo.ApplicationCommandOptionBoolean,
+		Name:        string(useDefaults),
+		Description: "Use the default values for the raw command. This is set to True by default",
+		Required:    false,
+	},
+	unsafeOption: {
+		Type:        discordgo.ApplicationCommandOptionBoolean,
+		Name:        string(unsafeOption),
+		Description: "Process the json file without validation. This is set to False by default",
+		Required:    false,
 	},
 }
 

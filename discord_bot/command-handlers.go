@@ -2,11 +2,14 @@ package discord_bot
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"github.com/SpenserCai/sd-webui-discord/utils"
 	"github.com/bwmarrin/discordgo"
 	"github.com/sahilm/fuzzy"
+	"io"
 	"log"
+	"net/http"
 	"regexp"
 	"stable_diffusion_bot/discord_bot/handlers"
 	"stable_diffusion_bot/entities"
@@ -23,10 +26,15 @@ var commandHandlers = map[Command]func(b *botImpl, s *discordgo.Session, i *disc
 	imagineCommand:         (*botImpl).processImagineCommand,
 	imagineSettingsCommand: (*botImpl).processImagineSettingsCommand,
 	refreshCommand:         (*botImpl).processRefreshCommand,
+	rawCommand:             (*botImpl).processRawCommand,
 }
 
 var autocompleteHandlers = map[Command]func(b *botImpl, s *discordgo.Session, i *discordgo.InteractionCreate){
 	imagineCommand: (*botImpl).processImagineAutocomplete,
+}
+
+var modalHandlers = map[Command]func(b *botImpl, s *discordgo.Session, i *discordgo.InteractionCreate){
+	rawCommand: (*botImpl).processRawModal,
 }
 
 func getOpts(data discordgo.ApplicationCommandInteractionData) map[CommandOption]*discordgo.ApplicationCommandInteractionDataOption {
@@ -62,7 +70,7 @@ func extractKeyValuePairsFromPrompt(prompt string) (parameters map[CommandOption
 //
 // (*discordgo.ApplicationCommandInteractionDataOption).IntValue() actually uses float64 for the interface conversion, so use float64 for integers, numbers, etc.
 // and then convert to the desired type.
-func interfaceConvertAuto[F any, V any](field *F, option CommandOption, optionMap map[CommandOption]*discordgo.ApplicationCommandInteractionDataOption, parameters map[CommandOption]string) (*V, bool) {
+func interfaceConvertAuto[F any, V string | float64](field *F, option CommandOption, optionMap map[CommandOption]*discordgo.ApplicationCommandInteractionDataOption, parameters map[CommandOption]string) (*V, bool) {
 	if field == nil {
 		log.Printf("WARNING: field %T is nil", field)
 	}
@@ -98,7 +106,7 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 
 	var position int
 
-	var queue *imagine_queue.QueueItem
+	var queue *entities.QueueItem
 
 	if option, ok := optionMap[promptOption]; !ok {
 		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "You need to provide a prompt.")
@@ -110,9 +118,11 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 		queue.Type = imagine_queue.ItemTypeImagine
 		queue.DiscordInteraction = i.Interaction
 
-		interfaceConvertAuto[string, string](&queue.NegativePrompt, negativeOption, optionMap, parameters)
+		if _, ok := interfaceConvertAuto[string, string](&queue.NegativePrompt, negativeOption, optionMap, parameters); ok {
+			queue.NegativePrompt = strings.ReplaceAll(queue.NegativePrompt, "{DEFAULT}", imagine_queue.DefaultNegative)
+		}
 
-		interfaceConvertAuto[string, string](&queue.SamplerName1, samplerOption, optionMap, parameters)
+		interfaceConvertAuto[string, string](&queue.SamplerName, samplerOption, optionMap, parameters)
 
 		if floatVal, ok := interfaceConvertAuto[int, float64](&queue.Steps, stepOption, optionMap, parameters); ok {
 			queue.Steps = int(*floatVal)
@@ -178,33 +188,33 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 
 		interfaceConvertAuto[string, string](&queue.AspectRatio, aspectRatio, optionMap, parameters)
 
-		if floatVal, ok := interfaceConvertAuto[float64, string](&queue.HiresUpscaleRate, hiresFixSize, optionMap, parameters); ok {
+		if floatVal, ok := interfaceConvertAuto[float64, string](&queue.HrScale, hiresFixSize, optionMap, parameters); ok {
 			float, err := strconv.ParseFloat(*floatVal, 64)
 			if err != nil {
 				log.Printf("Error parsing hiresUpscaleRate: %v", err)
 			} else {
-				queue.HiresUpscaleRate = float
-				queue.UseHiresFix = true
+				queue.HrScale = between(float, 1.0, 4.0)
+				queue.EnableHr = true
 			}
 		}
 
-		if boolVal, ok := interfaceConvertAuto[bool, string](&queue.UseHiresFix, hiresFixOption, optionMap, parameters); ok {
+		if boolVal, ok := interfaceConvertAuto[bool, string](&queue.EnableHr, hiresFixOption, optionMap, parameters); ok {
 			boolean, err := strconv.ParseBool(*boolVal)
 			if err != nil {
 				log.Printf("Error parsing hiresFix value: %v.", err)
 			} else {
-				queue.UseHiresFix = boolean
+				queue.EnableHr = boolean
 			}
 		}
 
-		interfaceConvertAuto[float64, float64](&queue.CfgScale, cfgScaleOption, optionMap, parameters)
+		interfaceConvertAuto[float64, float64](&queue.CFGScale, cfgScaleOption, optionMap, parameters)
 
 		// calculate batch count and batch size. prefer batch size to be the bigger number, both numbers should add up to 4.
 		// if batch size is 4, then batch count should be 1. if both are 4, set batch size to 4 and batch count to 1.
 		// if batch size is 1, then batch count *can* be 4, but it can also be 1.
 
-		if floatVal, ok := interfaceConvertAuto[int, float64](&queue.BatchCount, batchCountOption, optionMap, parameters); ok {
-			queue.BatchCount = int(*floatVal)
+		if floatVal, ok := interfaceConvertAuto[int, float64](&queue.NIter, batchCountOption, optionMap, parameters); ok {
+			queue.NIter = int(*floatVal)
 		}
 
 		if intVal, ok := interfaceConvertAuto[int, float64](&queue.BatchSize, batchSizeOption, optionMap, parameters); ok {
@@ -213,7 +223,7 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 
 		const maxImages = 4
 		queue.BatchSize = between(queue.BatchSize, 1, maxImages)
-		queue.BatchCount = min(maxImages/queue.BatchSize, queue.BatchCount)
+		queue.NIter = min(maxImages/queue.BatchSize, queue.NIter)
 
 		if boolVal, ok := interfaceConvertAuto[bool, string](&queue.RestoreFaces, restoreFacesOption, optionMap, parameters); ok {
 			boolean, err := strconv.ParseBool(*boolVal)
@@ -260,7 +270,8 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 				queue.Img2ImgItem.MessageAttachment = attachment
 
 				if option, ok := optionMap[denoisingOption]; ok {
-					queue.DenoisingStrength = option.FloatValue()
+					queue.TextToImageRequest.DenoisingStrength = option.FloatValue()
+					queue.Img2ImgItem.DenoisingStrength = option.FloatValue()
 				}
 			}
 		}
@@ -310,6 +321,8 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 			queue.ControlnetItem.Enabled = true
 		}
 
+		interfaceConvertAuto[float64, float64](&queue.OverrideSettings.CLIPStopAtLastLayers, clipSkipOption, optionMap, parameters)
+
 		if floatVal, ok := interfaceConvertAuto[float64, float64](nil, cfgRescaleOption, optionMap, parameters); ok {
 			queue.CFGRescale = &entities.CFGRescale{
 				Args: entities.CFGRescaleParameters{
@@ -326,9 +339,6 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 		if err != nil {
 			log.Printf("Error adding imagine to queue: %v\n", err)
 			handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "Error adding imagine to queue.", err)
-		} else {
-			// TODO: Remove debug message
-			//log.Printf("Added imagine %#v to queue. Position: %v\n", queue, position)
 		}
 	}
 
@@ -701,4 +711,176 @@ func (b *botImpl) processRefreshCommand(s *discordgo.Session, i *discordgo.Inter
 	}
 
 	handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(s, i.Interaction, content.String())
+}
+
+// processRawCommand responds with a Modal to receive a json blob from the user to pass to the api
+func (b *botImpl) processRawCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	optionMap := getOpts(i.ApplicationCommandData())
+
+	params := entities.RawParams{
+		UseDefault: true,
+		Unsafe:     false,
+	}
+	if option, ok := optionMap[useDefaults]; ok {
+		params.UseDefault = option.BoolValue()
+	}
+
+	if option, ok := optionMap[unsafeOption]; ok {
+		params.Unsafe = option.BoolValue()
+	}
+
+	interactionBytes, _ := json.Marshal(i.Interaction)
+	log.Printf("Interaction: %v", string(interactionBytes))
+
+	var snowflake string
+	if option, ok := optionMap[jsonFile]; !ok {
+		// if no json file is provided, we need to respond with a modal to get the json blob from the user
+		modalDefault[i.ID] = params
+		log.Printf("modalDefault: %v", modalDefault)
+		interactionResponse := discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseModal,
+			Data: &discordgo.InteractionResponseData{
+				CustomID: string(rawCommand),
+				Title:    "Raw JSON",
+				Components: []discordgo.MessageComponent{
+					handlers.Components[handlers.JSONInput],
+				},
+			},
+		}
+		err := s.InteractionRespond(i.Interaction, &interactionResponse)
+		if err != nil {
+			delete(modalDefault, i.ID)
+			log.Printf("Error responding to interaction: %v", err)
+
+			byteArr, err := json.Marshal(interactionResponse)
+			if err != nil {
+				log.Printf("Error marshalling interaction response data: %v", err)
+			}
+			log.Printf("Raw JSON: %v", string(byteArr))
+		}
+		return
+	} else {
+		snowflake = option.Value.(string)
+	}
+
+	handlers.Responses[handlers.ThinkResponse].(handlers.NewResponseType)(s, i)
+	attachments := i.ApplicationCommandData().Resolved.Attachments
+	if attachments == nil {
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "You need to provide a JSON file.")
+		return
+	}
+
+	for snowflake, attachment := range attachments {
+		log.Printf("Attachment[%v]: %#v", snowflake, attachment.URL)
+		if !strings.HasPrefix(attachment.ContentType, "application/json") {
+			log.Printf("Attachment[%v] is not a json file, removing from queue.", snowflake)
+			handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "You need to provide a JSON file.")
+			return
+		}
+	}
+
+	attachment, ok := attachments[snowflake]
+	if !ok {
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "You need to provide a JSON file.")
+		return
+	}
+
+	// download attachment url using http and convert to []byte
+	resp, err := http.Get(attachment.URL)
+	if err != nil {
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "Error downloading attachment.", err)
+		return
+	}
+	defer resp.Body.Close()
+	if params.Blob, err = io.ReadAll(resp.Body); err != nil {
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "Error reading attachment.", err)
+		return
+	}
+
+	params.Debug = strings.Contains(attachment.Filename, "DEBUG")
+	if err := b.jsonToQueue(i, params); err != nil {
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "Error adding imagine to queue.", err)
+		return
+	}
+}
+
+var modalDefault = make(map[string]entities.RawParams)
+
+//	type TextInput struct {
+//	   CustomID    string         `json:"custom_id"`
+//	   Label       string         `json:"label"`
+//	   Style       TextInputStyle `json:"style"`
+//	   Placeholder string         `json:"placeholder,omitempty"`
+//	   Value       string         `json:"value,omitempty"`
+//	   Required    bool           `json:"required"`
+//	   MinLength   int            `json:"min_length,omitempty"`
+//	   MaxLength   int            `json:"max_length,omitempty"`
+//	}
+func getModalData(data discordgo.ModalSubmitInteractionData) map[handlers.Component]*discordgo.TextInput {
+	var options = make(map[handlers.Component]*discordgo.TextInput)
+	for _, actionRow := range data.Components {
+		for _, c := range actionRow.(*discordgo.ActionsRow).Components {
+			switch c := c.(type) {
+			case *discordgo.TextInput:
+				options[handlers.Component(c.CustomID)] = c
+			default:
+				log.Fatalf("Wrong component type: %T, skipping...", c)
+			}
+		}
+	}
+	return options
+}
+
+func (b *botImpl) processRawModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	handlers.Responses[handlers.ThinkResponse].(handlers.NewResponseType)(s, i)
+
+	modalData := getModalData(i.ModalSubmitData())
+
+	var params entities.RawParams
+	if message, err := b.botSession.InteractionResponse(i.Interaction); err != nil {
+		if p, ok := modalDefault[message.Interaction.ID]; ok {
+			params = p
+			delete(modalDefault, message.Interaction.ID)
+		}
+	}
+
+	if data, ok := modalData[handlers.JSONInput]; !ok || data == nil || data.Value == "" {
+		log.Printf("modalData: %#v\n", modalData)
+		log.Printf("i.ModalSubmitData(): %#v\n", i.ModalSubmitData())
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "You need to provide a JSON blob.")
+		return
+	} else {
+		params.Debug = strings.Contains(data.Value, "{DEBUG}")
+		params.Blob = []byte(strings.ReplaceAll(data.Value, "{DEBUG}", ""))
+		if err := b.jsonToQueue(i, params); err != nil {
+			handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "Error adding imagine to queue.", err)
+		}
+	}
+}
+
+func (b *botImpl) jsonToQueue(i *discordgo.InteractionCreate, params entities.RawParams) error {
+	queue := &entities.QueueItem{}
+	if params.UseDefault {
+		queue = b.imagineQueue.NewQueueItem()
+	}
+
+	queue.Type = imagine_queue.ItemTypeRaw
+	queue.DiscordInteraction = i.Interaction
+
+	queue.Raw = &entities.TextToImageRaw{TextToImageRequest: queue.TextToImageRequest, RawParams: params}
+
+	// Override Scripts by unmarshalling to Raw
+	err := json.Unmarshal(params.Blob, &queue.Raw)
+	if err != nil {
+		return err
+	}
+
+	position, err := b.imagineQueue.AddImagine(queue)
+	if err != nil {
+		return err
+	}
+	handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(b.botSession, i.Interaction,
+		fmt.Sprintf("I'm dreaming something up for you. You are currently #%d in line.", position),
+	)
+	return nil
 }

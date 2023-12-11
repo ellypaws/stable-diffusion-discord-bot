@@ -43,6 +43,8 @@ const (
 	CancelDisabled    Component = "cancel_disabled"
 	InterruptDisabled Component = "interrupt_disabled"
 
+	JSONInput Component = "raw"
+
 	roleSelect = "role_select"
 )
 
@@ -290,6 +292,21 @@ var Components = map[Component]discordgo.MessageComponent{
 						Default: false,
 					},
 				},
+			},
+		},
+	},
+
+	JSONInput: discordgo.ActionsRow{
+		Components: []discordgo.MessageComponent{
+			discordgo.TextInput{
+				CustomID:    string(JSONInput),
+				Label:       "JSON blob",
+				Style:       discordgo.TextInputParagraph,
+				Placeholder: "{\"height\":768,\"width\":512,\"prompt\":\"masterpiece\"}",
+				Value:       "",
+				Required:    true,
+				MinLength:   1,
+				MaxLength:   4000,
 			},
 		},
 	},

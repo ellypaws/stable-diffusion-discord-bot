@@ -204,7 +204,7 @@ func imageEmbedFromBuffers(webhook *discordgo.WebhookEdit, embed *discordgo.Mess
 	return nil
 }
 
-func generationEmbedDetails(embed *discordgo.MessageEmbed, newGeneration *entities.ImageGenerationRequest, c *QueueItem, interrupted bool) *discordgo.MessageEmbed {
+func generationEmbedDetails(embed *discordgo.MessageEmbed, newGeneration *entities.ImageGenerationRequest, c *entities.QueueItem, interrupted bool) *discordgo.MessageEmbed {
 	if newGeneration == nil || c == nil {
 		log.Printf("WARNING: generationEmbedDetails called with nil %T or %T", newGeneration, c)
 		return embed
@@ -226,6 +226,8 @@ func generationEmbedDetails(embed *discordgo.MessageEmbed, newGeneration *entiti
 		embed.Title = "Reroll"
 	case c.Type == ItemTypeUpscale:
 		embed.Title = "Upscale"
+	case c.Type == ItemTypeRaw:
+		embed.Title = "JSON to Image"
 	default:
 		embed.Title = "Text to Image"
 	}
@@ -252,19 +254,29 @@ func generationEmbedDetails(embed *discordgo.MessageEmbed, newGeneration *entiti
 		newGeneration.CFGScale, newGeneration.Seed, newGeneration.SamplerName)
 
 	var scripts []string
-	if newGeneration.AlwaysonScripts != nil {
-		if newGeneration.AlwaysonScripts.ADetailer != nil {
+
+	if c.Type != ItemTypeRaw {
+		if newGeneration.Scripts.ADetailer != nil {
 			scripts = append(scripts, "ADetailer")
 		}
-		if newGeneration.AlwaysonScripts.ControlNet != nil {
+		if newGeneration.Scripts.ControlNet != nil {
 			scripts = append(scripts, "ControlNet")
 		}
-		if newGeneration.AlwaysonScripts.CFGRescale != nil {
+		if newGeneration.Scripts.CFGRescale != nil {
 			scripts = append(scripts, "CFGRescale")
 		}
+	} else {
+		for script := range c.Raw.RawScripts {
+			scripts = append(scripts, script)
+		}
 	}
+
 	if len(scripts) > 0 {
-		embed.Description += fmt.Sprintf("\nScripts: [`%v`]", strings.Join(scripts, ", "))
+		embed.Description += fmt.Sprintf("\n**Scripts**: [`%v`]", strings.Join(scripts, ", "))
+	}
+
+	if newGeneration.OverrideSettings.CLIPStopAtLastLayers > 1 {
+		embed.Description += fmt.Sprintf("\n**CLIPSkip**: `%v`", newGeneration.OverrideSettings.CLIPStopAtLastLayers)
 	}
 
 	// store as "2015-12-31T12:00:00.000Z"
@@ -293,6 +305,10 @@ func generationEmbedDetails(embed *discordgo.MessageEmbed, newGeneration *entiti
 			Name:  "Prompt",
 			Value: fmt.Sprintf("```\n%s\n```", newGeneration.Prompt),
 		},
+	}
+	if c.Raw.Debug {
+		// remove prompt, last item from embed.Fields
+		embed.Fields = embed.Fields[:len(embed.Fields)-1]
 	}
 	return embed
 }
