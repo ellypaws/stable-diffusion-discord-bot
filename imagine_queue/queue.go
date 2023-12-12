@@ -97,10 +97,11 @@ func (q *queueImplementation) DefaultQueueItem() *entities.QueueItem {
 		log.Printf("Error getting default batch size: %v", err)
 		defaultBatchSize = 4
 	}
+
 	return &entities.QueueItem{
 		Type: ItemTypeImagine,
 
-		ImageGenerationRequest: entities.ImageGenerationRequest{
+		ImageGenerationRequest: &entities.ImageGenerationRequest{
 			GenerationInfo: entities.GenerationInfo{
 				CreatedAt: time.Now(),
 			},
@@ -143,6 +144,19 @@ func (q *queueImplementation) NewQueueItem(options ...func(*entities.QueueItem))
 func WithPrompt(prompt string) func(*entities.QueueItem) {
 	return func(q *entities.QueueItem) {
 		q.Prompt = prompt
+	}
+}
+
+func WithCurrentModels(api stable_diffusion_api.StableDiffusionAPI) func(*entities.QueueItem) {
+	return func(q *entities.QueueItem) {
+		config, err := api.GetConfig()
+		if err != nil {
+			log.Printf("Error getting config: %v", err)
+		} else {
+			q.ImageGenerationRequest.Checkpoint = config.SDModelCheckpoint
+			q.VAE = config.SDVae
+			q.Hypernetwork = config.SDHypernetwork
+		}
 	}
 }
 
@@ -214,8 +228,10 @@ func (q *queueImplementation) pullNextInQueue() {
 				return
 			}
 			switch q.currentImagine.Type {
-			case ItemTypeImagine, ItemTypeReroll, ItemTypeVariation, ItemTypeRaw:
+			case ItemTypeImagine, ItemTypeRaw:
 				go q.processCurrentImagine()
+			case ItemTypeReroll, ItemTypeVariation:
+				go q.processVariation()
 			case ItemTypeImg2Img:
 				go q.processImg2ImgImagine()
 			case ItemTypeUpscale:
@@ -483,8 +499,9 @@ func betweenPtr[T cmp.Ordered](value, minimum, maximum T) *T {
 	return &out
 }
 
-func (q *queueImplementation) getPreviousGeneration(imagine *entities.QueueItem, sortOrder int) (*entities.ImageGenerationRequest, error) {
+func (q *queueImplementation) getPreviousGeneration(imagine *entities.QueueItem) (*entities.ImageGenerationRequest, error) {
 	interactionID := imagine.DiscordInteraction.ID
+	sortOrder := imagine.InteractionIndex
 	messageID := ""
 
 	if imagine.DiscordInteraction.Message != nil {

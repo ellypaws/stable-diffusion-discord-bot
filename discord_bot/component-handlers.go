@@ -211,6 +211,15 @@ var componentHandlers = map[handlers.Component]func(bot *botImpl, s *discordgo.S
 
 func (b *botImpl) processImagineReroll(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	position, queueError := b.imagineQueue.AddImagine(&entities.QueueItem{
+		ImageGenerationRequest: &entities.ImageGenerationRequest{
+			GenerationInfo: entities.GenerationInfo{
+				InteractionID: i.Interaction.ID,
+				MessageID:     i.Message.ID,
+				MemberID:      i.Member.User.ID,
+				CreatedAt:     time.Now(),
+			},
+			TextToImageRequest: &entities.TextToImageRequest{},
+		},
 		Type:               imagine_queue.ItemTypeReroll,
 		DiscordInteraction: i.Interaction,
 	})
@@ -252,6 +261,16 @@ func (b *botImpl) processImagineUpscale(s *discordgo.Session, i *discordgo.Inter
 
 func (b *botImpl) processImagineVariation(s *discordgo.Session, i *discordgo.InteractionCreate, variationIndex int) {
 	position, queueError := b.imagineQueue.AddImagine(&entities.QueueItem{
+		ImageGenerationRequest: &entities.ImageGenerationRequest{
+			GenerationInfo: entities.GenerationInfo{
+				InteractionID: i.Interaction.ID,
+				MessageID:     i.Message.ID,
+				MemberID:      i.Member.User.ID,
+				SortOrder:     variationIndex,
+				CreatedAt:     time.Now(),
+			},
+			TextToImageRequest: &entities.TextToImageRequest{},
+		},
 		Type:               imagine_queue.ItemTypeVariation,
 		InteractionIndex:   variationIndex,
 		DiscordInteraction: i.Interaction,

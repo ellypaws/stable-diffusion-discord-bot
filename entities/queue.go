@@ -7,7 +7,7 @@ import (
 type QueueItem struct {
 	Type ItemType
 
-	ImageGenerationRequest
+	*ImageGenerationRequest
 
 	AspectRatio        string
 	InteractionIndex   int

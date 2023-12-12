@@ -306,7 +306,7 @@ func generationEmbedDetails(embed *discordgo.MessageEmbed, newGeneration *entiti
 			Value: fmt.Sprintf("```\n%s\n```", newGeneration.Prompt),
 		},
 	}
-	if c.Raw.Debug {
+	if c.Raw != nil && c.Raw.Debug {
 		// remove prompt, last item from embed.Fields
 		embed.Fields = embed.Fields[:len(embed.Fields)-1]
 	}

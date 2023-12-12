@@ -15,7 +15,7 @@ import (
 )
 
 func (q *queueImplementation) processImagineGrid(c *entities.QueueItem) error {
-	newGeneration := &c.ImageGenerationRequest
+	newGeneration := c.ImageGenerationRequest
 	config, err := q.stableDiffusionAPI.GetConfig()
 	originalConfig := config
 	if err != nil {
