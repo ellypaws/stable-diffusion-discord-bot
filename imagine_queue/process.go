@@ -102,12 +102,13 @@ func fillBlankModels(q *queueImplementation, request *entities.ImageGenerationRe
 // initializeScripts sets up ADetailer and Controlnet scripts
 func initializeScripts(queue *entities.QueueItem) {
 	request := queue.ImageGenerationRequest
+	textToImage := request.TextToImageRequest
 	if queue.ADetailerString != "" {
 		log.Printf("q.currentImagine.ADetailerString: %v", queue.ADetailerString)
 
 		request.NewADetailer()
 
-		request.Scripts.ADetailer.AppendSegModelByString(queue.ADetailerString, request)
+		textToImage.Scripts.ADetailer.AppendSegModelByString(queue.ADetailerString, request)
 	}
 
 	if queue.ControlnetItem.Enabled {

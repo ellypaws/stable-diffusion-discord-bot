@@ -14,25 +14,71 @@ import (
 	"time"
 )
 
-func (q *queueImplementation) processImagineGrid(c *entities.QueueItem) error {
-	newGeneration := c.ImageGenerationRequest
+func (q *queueImplementation) processImagineGrid(queue *entities.QueueItem) error {
+	request := queue.ImageGenerationRequest
+	textToImage := request.TextToImageRequest
 	config, err := q.stableDiffusionAPI.GetConfig()
 	originalConfig := config
 	if err != nil {
 		log.Printf("Error getting config: %v", err)
 		return err
 	} else {
-		config, err = q.updateModels(newGeneration, c, config)
+		config, err = q.updateModels(request, queue, config)
 		if err != nil {
 			return err
 		}
 	}
 
-	log.Printf("Processing imagine #%s: %v\n", c.DiscordInteraction.ID, newGeneration.Prompt)
+	log.Printf("Processing imagine #%s: %v\n", queue.DiscordInteraction.ID, textToImage.Prompt)
 
-	newContent := imagineMessageSimple(newGeneration, c.DiscordInteraction.Member.User, 0)
+	embed, webhook, err := showInitialMessage(queue, q)
+	if err != nil {
+		return err
+	}
 
-	embed := generationEmbedDetails(&discordgo.MessageEmbed{}, newGeneration, c, c.Interrupt != nil)
+	request, err = q.recordToRepository(request, err)
+	if err != nil {
+		return err
+	}
+
+	generationDone := make(chan bool)
+
+	go q.updateProgressBar(queue, generationDone, config, originalConfig, webhook)
+
+	switch queue.Type {
+	case ItemTypeImagine, ItemTypeReroll, ItemTypeVariation, ItemTypeRaw:
+		response, err := q.textInference(queue)
+		generationDone <- true
+		if err != nil {
+			return err
+		}
+
+		if response == nil {
+			log.Printf("Response of type %v is nil! Returned error:%v", queue.Type, err)
+			return err
+		}
+
+		q.recordSeeds(response, request, config)
+
+		err = q.showFinalMessage(queue, response, embed, webhook)
+		if err != nil {
+			return err
+		}
+	case ItemTypeImg2Img:
+		err := q.imageToImage(generationDone, embed, webhook)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func showInitialMessage(queue *entities.QueueItem, q *queueImplementation) (*discordgo.MessageEmbed, *discordgo.WebhookEdit, error) {
+	request := queue.ImageGenerationRequest
+	newContent := imagineMessageSimple(request, queue.DiscordInteraction.Member.User, 0)
+
+	embed := generationEmbedDetails(&discordgo.MessageEmbed{}, request, queue, queue.Interrupt != nil)
 
 	webhook := &discordgo.WebhookEdit{
 		Content:    &newContent,
@@ -40,195 +86,219 @@ func (q *queueImplementation) processImagineGrid(c *entities.QueueItem) error {
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 	}
 
-	message, err := q.botSession.InteractionResponseEdit(c.DiscordInteraction, webhook)
+	message, err := q.botSession.InteractionResponseEdit(queue.DiscordInteraction, webhook)
 	if err != nil {
 		log.Printf("Error editing interaction: %v", err)
-		return err
+		return nil, nil, err
 	}
 
 	// store message ID in c.DiscordInteraction.Message
-	if c.DiscordInteraction != nil && c.DiscordInteraction.Message == nil && message != nil {
+	if queue.DiscordInteraction != nil && queue.DiscordInteraction.Message == nil && message != nil {
 		log.Printf("Setting c.DiscordInteraction.Message to message: %v", message)
-		c.DiscordInteraction.Message = message
+		queue.DiscordInteraction.Message = message
 	}
 
-	newGeneration.InteractionID = c.DiscordInteraction.ID
-	newGeneration.MessageID = message.ID
-	newGeneration.MemberID = c.DiscordInteraction.Member.User.ID
-	newGeneration.SortOrder = 0
-	newGeneration.Processed = true
+	request.InteractionID = queue.DiscordInteraction.ID
+	request.MessageID = message.ID
+	request.MemberID = queue.DiscordInteraction.Member.User.ID
+	request.SortOrder = 0
+	request.Processed = true
+	return embed, webhook, nil
+}
 
+func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, response *stable_diffusion_api.TextToImageResponse, embed *discordgo.MessageEmbed, webhook *discordgo.WebhookEdit) error {
+	request := queue.ImageGenerationRequest
+	totalImages := totalImageCount(request)
+
+	imageBuffers, thumbnailBuffers := retrieveImagesFromResponse(response, queue)
+
+	mention := fmt.Sprintf("<@%v>", queue.DiscordInteraction.Member.User.ID)
+	// get new embed from generationEmbedDetails as q.imageGenerationRepo.Create has filled in newGeneration.CreatedAt and interrupted
+	embed = generationEmbedDetails(embed, request, queue, queue.Interrupt != nil)
+
+	webhook = &discordgo.WebhookEdit{
+		Content:    &mention,
+		Embeds:     &[]*discordgo.MessageEmbed{embed},
+		Components: rerollVariationComponents(min(len(imageBuffers), totalImages), queue.Type == ItemTypeImg2Img),
+	}
+
+	if queue.Type != ItemTypeImg2Img || len(thumbnailBuffers) > 0 {
+		if err := imageEmbedFromBuffers(webhook, embed, imageBuffers[:min(len(imageBuffers), totalImages)], thumbnailBuffers); err != nil {
+			log.Printf("Error creating image embed: %v\n", err)
+			return err
+		}
+	} else {
+		// because we don't have the original webhook that contains the image file
+		var primaryImage *bytes.Reader
+		if len(imageBuffers) > 0 {
+			primaryImage = bytes.NewReader(imageBuffers[0].Bytes())
+		}
+		err := imageAttachmentAsThumbnail(webhook, embed, primaryImage, queue.Img2ImgItem.MessageAttachment, true)
+		if err != nil {
+			log.Printf("Error attaching image as thumbnail: %v", err)
+			return err
+		}
+	}
+
+	_, err := q.botSession.InteractionResponseEdit(queue.DiscordInteraction, webhook)
+	if err != nil {
+		log.Printf("Error editing interaction: %v\n", err)
+		return err
+	}
+	return nil
+}
+
+func (q *queueImplementation) recordSeeds(response *stable_diffusion_api.TextToImageResponse, generation *entities.ImageGenerationRequest, config *entities.Config) {
+	log.Printf("Seeds: %v Subseeds:%v", response.Seeds, response.Subseeds)
+	for idx := range response.Seeds {
+		subGeneration := generation
+		subGeneration.SortOrder = idx + 1
+		subGeneration.Seed = response.Seeds[idx]
+		subGeneration.Subseed = int64(response.Subseeds[idx])
+		subGeneration.Checkpoint = config.SDModelCheckpoint
+		subGeneration.VAE = config.SDVae
+		subGeneration.Hypernetwork = config.SDHypernetwork
+
+		_, createErr := q.imageGenerationRepo.Create(context.Background(), subGeneration)
+		if createErr != nil {
+			log.Printf("Error creating image generation record: %v\n", createErr)
+		}
+	}
+}
+
+func totalImageCount(generation *entities.ImageGenerationRequest) int {
+	const maxImages = 4
+	if generation.BatchSize == 0 {
+		log.Printf("Warning: newGeneration.Batchsize == 0")
+		generation.BatchSize = between(generation.BatchSize, 1, maxImages)
+	}
+	if generation.NIter == 0 {
+		log.Printf("Warning: newGeneration.NIter == 0")
+		generation.NIter = between(generation.NIter, 1, maxImages/generation.BatchSize)
+	}
+
+	totalImages := generation.NIter * generation.BatchSize
+	return totalImages
+}
+
+func retrieveImagesFromResponse(response *stable_diffusion_api.TextToImageResponse, queue *entities.QueueItem) (images, thumbnails []*bytes.Buffer) {
+	images = make([]*bytes.Buffer, len(response.Images))
+
+	for idx, image := range response.Images {
+		decodedImage, decodeErr := base64.StdEncoding.DecodeString(image)
+		if decodeErr != nil {
+			log.Printf("Error decoding image: %v\n", decodeErr)
+		}
+
+		images[idx] = bytes.NewBuffer(decodedImage)
+	}
+
+	if queue.ControlnetItem.MessageAttachment != nil {
+		decodedBytes, err := base64.StdEncoding.DecodeString(safeDereference(queue.ControlnetItem.MessageAttachment.Image))
+		if err != nil {
+			log.Printf("Error decoding image: %v\n", err)
+		}
+		thumbnails = append(thumbnails, bytes.NewBuffer(decodedBytes))
+	}
+
+	if queue.Img2ImgItem.MessageAttachment != nil {
+		decodedBytes, err := base64.StdEncoding.DecodeString(safeDereference(queue.Img2ImgItem.MessageAttachment.Image))
+		if err != nil {
+			log.Printf("Error decoding image: %v\n", err)
+		}
+		thumbnails = append(thumbnails, bytes.NewBuffer(decodedBytes))
+	}
+
+	generation := queue.ImageGenerationRequest
+	totalImages := totalImageCount(generation)
+	if len(images) > totalImages {
+		log.Printf("received extra images: len(imageBufs): %v, controlnet: %v", len(images), queue.ControlnetItem.Enabled)
+		thumbnails = append(thumbnails, images[totalImages:]...)
+	}
+
+	return images, thumbnails
+}
+
+func (q *queueImplementation) textInference(queue *entities.QueueItem) (response *stable_diffusion_api.TextToImageResponse, err error) {
+	generation := queue.ImageGenerationRequest
+	switch queue.Type {
+	case ItemTypeRaw:
+		if q.currentImagine.Raw.Unsafe {
+			response, err = q.stableDiffusionAPI.TextToImageRaw(q.currentImagine.Raw.Blob)
+		} else {
+			marshal, marshalErr := q.currentImagine.Raw.Marshal()
+			if marshalErr != nil {
+				log.Printf("Error marshalling raw: %v", marshalErr)
+				return nil, marshalErr
+			}
+			response, err = q.stableDiffusionAPI.TextToImageRaw(marshal)
+		}
+	default:
+		response, err = q.stableDiffusionAPI.TextToImageRequest(generation.TextToImageRequest)
+	}
+	return response, err
+}
+
+func (q *queueImplementation) recordToRepository(generation *entities.ImageGenerationRequest, err error) (*entities.ImageGenerationRequest, error) {
 	var ok bool
-	if newGeneration.Prompt, ok = strings.CutSuffix(newGeneration.Prompt, "{DEBUG}"); ok {
-		byteArr, _ := newGeneration.TextToImageRequest.Marshal()
+	if generation.Prompt, ok = strings.CutSuffix(generation.Prompt, "{DEBUG}"); ok {
+		byteArr, _ := generation.TextToImageRequest.Marshal()
 		log.Printf("{DEBUG} TextToImageRequest: %v", string(byteArr))
 	}
 
 	// return newGeneration from image_generations.Create as we need newGeneration.CreatedAt later on
-	newGeneration, err = q.imageGenerationRepo.Create(context.Background(), newGeneration)
+	generation, err = q.imageGenerationRepo.Create(context.Background(), generation)
 	if err != nil {
 		log.Printf("Error creating image generation record: %v\n", err)
-		return err
+		return nil, err
 	}
+	return generation, nil
+}
 
-	generationDone := make(chan bool)
-
-	go func() {
-		for {
-			select {
-			case c.DiscordInteraction = <-c.Interrupt:
-				err := q.stableDiffusionAPI.Interrupt()
-				if err != nil {
-					handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, fmt.Sprintf("Error interrupting: %v", err))
-					return
-				}
-				message := handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, c.DiscordInteraction, "Generation Interrupted", webhook, handlers.Components[handlers.DeleteGeneration])
-				if c.DiscordInteraction.Message == nil && message != nil {
-					log.Printf("Setting c.DiscordInteraction.Message to message from channel c.Interrupt: %v", message)
-					c.DiscordInteraction.Message = message
-				}
-			case <-generationDone:
-				err := q.revertModels(config, originalConfig)
-				if err != nil {
-					handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, fmt.Sprintf("Error reverting models: %v", err))
-				}
-				return
-			case <-time.After(1 * time.Second):
-				progress, progressErr := q.stableDiffusionAPI.GetCurrentProgress()
-				if progressErr != nil {
-					log.Printf("Error getting current progress: %v", progressErr)
-					handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, fmt.Sprintf("Error getting current progress: %v", progressErr))
-
-					return
-				}
-
-				if progress.Progress == 0 {
-					continue
-				}
-
-				progressContent := imagineMessageSimple(newGeneration, c.DiscordInteraction.Member.User, progress.Progress)
-
-				_, progressErr = q.botSession.InteractionResponseEdit(c.DiscordInteraction, &discordgo.WebhookEdit{
-					Content: &progressContent,
-				})
-				if progressErr != nil {
-					log.Printf("Error editing interaction: %v", err)
-				}
-			}
-		}
-	}()
-
-	switch c.Type {
-	case ItemTypeImagine, ItemTypeReroll, ItemTypeVariation, ItemTypeRaw:
-		var resp *stable_diffusion_api.TextToImageResponse
-		var err error
-		switch c.Type {
-		case ItemTypeRaw:
-			if q.currentImagine.Raw.Unsafe {
-				resp, err = q.stableDiffusionAPI.TextToImageRaw(q.currentImagine.Raw.Blob)
-			} else {
-				marshal, marshalErr := q.currentImagine.Raw.Marshal()
-				if marshalErr != nil {
-					log.Printf("Error marshalling raw: %v", marshalErr)
-					return marshalErr
-				}
-				resp, err = q.stableDiffusionAPI.TextToImageRaw(marshal)
-			}
-		default:
-			resp, err = q.stableDiffusionAPI.TextToImageRequest(newGeneration.TextToImageRequest)
-		}
-
-		generationDone <- true
-
-		if err != nil || resp == nil {
-			log.Printf("Error processing image: %v\n", err)
-			return err
-		}
-
-		// get new embed from generationEmbedDetails as q.imageGenerationRepo.Create has filled in newGeneration.CreatedAt and interrupted
-		embed = generationEmbedDetails(embed, newGeneration, c, c.Interrupt != nil)
-
-		log.Printf("Seeds: %v Subseeds:%v", resp.Seeds, resp.Subseeds)
-
-		imageBufs := make([]*bytes.Buffer, len(resp.Images))
-
-		for idx, image := range resp.Images {
-			decodedImage, decodeErr := base64.StdEncoding.DecodeString(image)
-			if decodeErr != nil {
-				log.Printf("Error decoding image: %v\n", decodeErr)
-			}
-
-			imageBufs[idx] = bytes.NewBuffer(decodedImage)
-		}
-
-		for idx := range resp.Seeds {
-			subGeneration := newGeneration
-			subGeneration.SortOrder = idx + 1
-			subGeneration.Seed = resp.Seeds[idx]
-			subGeneration.Subseed = int64(resp.Subseeds[idx])
-			subGeneration.Checkpoint = config.SDModelCheckpoint
-			subGeneration.VAE = config.SDVae
-			subGeneration.Hypernetwork = config.SDHypernetwork
-
-			_, createErr := q.imageGenerationRepo.Create(context.Background(), subGeneration)
-			if createErr != nil {
-				log.Printf("Error creating image generation record: %v\n", createErr)
-			}
-		}
-
-		var thumbnailBuffers []*bytes.Buffer
-
-		if c.ControlnetItem.MessageAttachment != nil {
-			decodedBytes, err := base64.StdEncoding.DecodeString(safeDereference(c.ControlnetItem.MessageAttachment.Image))
+func (q *queueImplementation) updateProgressBar(queue *entities.QueueItem, generationDone chan bool, config, originalConfig *entities.Config, webhook *discordgo.WebhookEdit) {
+	request := queue.ImageGenerationRequest
+	for {
+		select {
+		case queue.DiscordInteraction = <-queue.Interrupt:
+			err := q.stableDiffusionAPI.Interrupt()
 			if err != nil {
-				log.Printf("Error decoding image: %v\n", err)
+				handlers.Errors[handlers.ErrorResponse](q.botSession, queue.DiscordInteraction, fmt.Sprintf("Error interrupting: %v", err))
+				return
 			}
-			thumbnailBuffers = append(thumbnailBuffers, bytes.NewBuffer(decodedBytes))
-		}
+			message := handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, queue.DiscordInteraction, "Generation Interrupted", webhook, handlers.Components[handlers.DeleteGeneration])
+			if queue.DiscordInteraction.Message == nil && message != nil {
+				log.Printf("Setting c.DiscordInteraction.Message to message from channel c.Interrupt: %v", message)
+				queue.DiscordInteraction.Message = message
+			}
+		case <-generationDone:
+			err := q.revertModels(config, originalConfig)
+			if err != nil {
+				handlers.Errors[handlers.ErrorResponse](q.botSession, queue.DiscordInteraction, fmt.Sprintf("Error reverting models: %v", err))
+			}
+			return
+		case <-time.After(1 * time.Second):
+			progress, progressErr := q.stableDiffusionAPI.GetCurrentProgress()
+			if progressErr != nil {
+				log.Printf("Error getting current progress: %v", progressErr)
+				handlers.Errors[handlers.ErrorResponse](q.botSession, queue.DiscordInteraction, fmt.Sprintf("Error getting current progress: %v", progressErr))
+				return
+			}
 
-		const maxImages = 4
-		if newGeneration.BatchSize == 0 {
-			log.Printf("Warning: newGeneration.Batchsize == 0")
-			newGeneration.BatchSize = between(newGeneration.BatchSize, 1, maxImages)
-		}
-		if newGeneration.NIter == 0 {
-			log.Printf("Warning: newGeneration.NIter == 0")
-			newGeneration.NIter = between(newGeneration.NIter, 1, maxImages/newGeneration.BatchSize)
-		}
+			if progress.Progress == 0 {
+				continue
+			}
 
-		totalImages := newGeneration.NIter * newGeneration.BatchSize
+			progressContent := imagineMessageSimple(request, queue.DiscordInteraction.Member.User, progress.Progress)
 
-		if len(imageBufs) > totalImages {
-			log.Printf("received extra images: len(imageBufs): %v, controlnet: %v", len(imageBufs), c.ControlnetItem.Enabled)
-			thumbnailBuffers = append(thumbnailBuffers, imageBufs[totalImages:]...)
-		}
-
-		mention := fmt.Sprintf("<@%v>", c.DiscordInteraction.Member.User.ID)
-
-		webhook = &discordgo.WebhookEdit{
-			Content:    &mention,
-			Embeds:     &[]*discordgo.MessageEmbed{embed},
-			Components: rerollVariationComponents(min(len(imageBufs), totalImages), c.Type == ItemTypeImg2Img),
-		}
-
-		if err := imageEmbedFromBuffers(webhook, embed, imageBufs[:min(len(imageBufs), totalImages)], thumbnailBuffers); err != nil {
-			log.Printf("Error creating image embed: %v\n", err)
-			return err
-		}
-
-		_, err = q.botSession.InteractionResponseEdit(c.DiscordInteraction, webhook)
-		if err != nil {
-			log.Printf("Error editing interaction: %v\n", err)
-			return err
-		}
-	case ItemTypeImg2Img:
-		err, done := q.imageToImage(newGeneration, c, generationDone)
-		if done {
-			return err
+			_, progressErr = q.botSession.InteractionResponseEdit(queue.DiscordInteraction, &discordgo.WebhookEdit{
+				Content: &progressContent,
+			})
+			if progressErr != nil {
+				log.Printf("Error editing interaction: %v", progressErr)
+				return
+			}
 		}
 	}
-
-	return nil
 }
 
 func (q *queueImplementation) revertModels(config *entities.Config, originalConfig *entities.Config) error {

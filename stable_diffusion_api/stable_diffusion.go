@@ -246,12 +246,7 @@ func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, 
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %v\n%v", response.Status, response.Body)
-	}
-
 	body, _ := io.ReadAll(response.Body)
-
 	respStruct := &jsonTextToImageResponse{}
 
 	err = json.Unmarshal(body, respStruct)
@@ -467,7 +462,12 @@ func (api *apiImplementation) GET(getURL string) ([]byte, error) {
 
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, errors.New(fmt.Sprintf("unexpected status code: %v", response.Status))
+		body, _ := io.ReadAll(response.Body)
+		errorString := "(unknown error)"
+		if len(body) > 0 {
+			errorString = fmt.Sprintf("\n```json\n%v\n```", string(body))
+		}
+		return nil, fmt.Errorf("unexpected status code: `%v` %v", response.Status, errorString)
 	}
 
 	body, _ := io.ReadAll(response.Body)
@@ -495,8 +495,14 @@ func (api *apiImplementation) POST(postURL string, jsonData []byte) (*http.Respo
 		return nil, err
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, errors.New(fmt.Sprintf("unexpected status code: %v", response.Status))
+		body, _ := io.ReadAll(response.Body)
+		errorString := "(unknown error)"
+		if len(body) > 0 {
+			errorString = fmt.Sprintf("\n```json\n%v\n```", string(body))
+		}
+		return nil, fmt.Errorf("unexpected status code: `%v` %v", response.Status, errorString)
 	}
+
 	return response, nil
 }
 
