@@ -78,17 +78,8 @@ var Responses = map[ResponseType]any{
 		}
 	}),
 	followupResponse: MsgReturnType(func(bot *discordgo.Session, i *discordgo.Interaction, message ...any) *discordgo.Message {
-		webhookParams := discordgo.WebhookParams{}
-		for _, m := range message {
-			switch content := m.(type) {
-			case string:
-				webhookParams.Content = content
-			case discordgo.MessageComponent:
-				webhookParams.Components = append(webhookParams.Components, content)
-			case discordgo.MessageFlags:
-				webhookParams.Flags = content
-			}
-		}
+		webhookParams := contentToWebhookParams(message...)
+
 		msg, err := bot.FollowupMessageCreate(i, true, &webhookParams)
 		if err != nil {
 			Errors[ErrorFollowup](bot, i, err)
@@ -99,6 +90,7 @@ var Responses = map[ResponseType]any{
 	followupEdit: editResponseType(func(bot *discordgo.Session, i *discordgo.Interaction, message *discordgo.Message, content ...any) *discordgo.Message {
 		// check if any content is a webhook edit
 		webhookEdit := webhookFromContents(content...)
+
 		contentEdit(webhookEdit, message)
 		contentEdit(webhookEdit, content...)
 
@@ -110,17 +102,8 @@ var Responses = map[ResponseType]any{
 	}),
 
 	ephemeralFollowup: MsgReturnType(func(bot *discordgo.Session, i *discordgo.Interaction, message ...any) *discordgo.Message {
-		webhookParams := discordgo.WebhookParams{
-			Flags: discordgo.MessageFlagsEphemeral,
-		}
-		for _, m := range message {
-			switch content := m.(type) {
-			case string:
-				webhookParams.Content = content
-			case discordgo.MessageComponent:
-				webhookParams.Components = append(webhookParams.Components, content)
-			}
-		}
+		webhookParams := contentToWebhookParams(message...)
+
 		msg, err := bot.FollowupMessageCreate(i, true, &webhookParams)
 		if err != nil {
 			Errors[ErrorFollowup](bot, i, err)
@@ -130,16 +113,8 @@ var Responses = map[ResponseType]any{
 
 	editMessage: editResponseType(func(bot *discordgo.Session, i *discordgo.Interaction, message *discordgo.Message, content ...any) *discordgo.Message {
 		// check if any content is a webhook edit
-		var webhookEdit *discordgo.WebhookEdit
-		for _, m := range content {
-			switch c := m.(type) {
-			case *discordgo.WebhookEdit:
-				webhookEdit = c
-			}
-		}
-		if webhookEdit == nil {
-			webhookEdit = &discordgo.WebhookEdit{}
-		}
+		webhookEdit := webhookFromContents(content...)
+
 		contentEdit(webhookEdit, message)
 		contentEdit(webhookEdit, content...)
 
@@ -166,16 +141,7 @@ var Responses = map[ResponseType]any{
 
 	EditInteractionResponse: MsgReturnType(func(bot *discordgo.Session, i *discordgo.Interaction, content ...any) *discordgo.Message {
 		// check if any content is a webhook edit
-		var webhookEdit *discordgo.WebhookEdit
-		for _, m := range content {
-			switch c := m.(type) {
-			case *discordgo.WebhookEdit:
-				webhookEdit = c
-			}
-		}
-		if webhookEdit == nil {
-			webhookEdit = &discordgo.WebhookEdit{}
-		}
+		webhookEdit := webhookFromContents(content...)
 
 		contentEdit(webhookEdit, content...)
 
@@ -230,17 +196,33 @@ var Responses = map[ResponseType]any{
 }
 
 func webhookFromContents(content ...any) *discordgo.WebhookEdit {
-	var webhookEdit *discordgo.WebhookEdit
+	webhookEdit := &discordgo.WebhookEdit{}
 	for _, m := range content {
 		switch c := m.(type) {
+		case discordgo.WebhookEdit:
+			webhookEdit = &c
 		case *discordgo.WebhookEdit:
 			webhookEdit = c
 		}
 	}
-	if webhookEdit == nil {
-		webhookEdit = &discordgo.WebhookEdit{}
-	}
 	return webhookEdit
+}
+
+func contentToWebhookParams(content ...any) discordgo.WebhookParams {
+	webhookParams := discordgo.WebhookParams{}
+	for _, m := range content {
+		switch c := m.(type) {
+		case discordgo.WebhookParams:
+			webhookParams = c
+		case string:
+			webhookParams.Content = c
+		case discordgo.MessageComponent:
+			webhookParams.Components = append(webhookParams.Components, c)
+		case discordgo.MessageFlags:
+			webhookParams.Flags = c
+		}
+	}
+	return webhookParams
 }
 
 func contentEdit(webhookEdit *discordgo.WebhookEdit, messages ...any) {

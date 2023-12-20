@@ -20,7 +20,7 @@ func (q *queueImplementation) imageToImage(generationDone chan bool, embed *disc
 	queue := q.currentImagine
 	img2img := t2iToImg2Img(queue.TextToImageRequest)
 
-	err := setHeight(queue, &img2img)
+	err := calculateImg2ImgDimensions(queue, &img2img)
 	if err != nil {
 		return err
 	}
@@ -38,16 +38,9 @@ func (q *queueImplementation) imageToImage(generationDone chan bool, embed *disc
 	return nil
 }
 
-func setHeight(queue *entities.QueueItem, img2img *entities.ImageToImageRequest) error {
+func calculateImg2ImgDimensions(queue *entities.QueueItem, img2img *entities.ImageToImageRequest) error {
 	if len(queue.Attachments) == 0 {
 		return errors.New("no attached images found, skipping img2img generation")
-	}
-
-	calculateGCD := func(a, b int) int {
-		for b != 0 {
-			a, b = b, a%b
-		}
-		return a
 	}
 
 	width, height, err := utils.GetImageSizeFromBase64(safeDereference(queue.Img2ImgItem.Image))
@@ -59,10 +52,17 @@ func setHeight(queue *entities.QueueItem, img2img *entities.ImageToImageRequest)
 	gcd := calculateGCD(width, height)
 	aspectRatio := fmt.Sprintf("%d:%d", width/gcd, height/gcd)
 
-	*(*img2img).Width, *(*img2img).Height = aspectRatioCalculation(aspectRatio, initializedWidth, initializedHeight)
+	*img2img.Width, *img2img.Height = aspectRatioCalculation(aspectRatio, initializedWidth, initializedHeight)
 
-	(*img2img).InitImages = append(img2img.InitImages, safeDereference(queue.Img2ImgItem.Image))
+	img2img.InitImages = append(img2img.InitImages, safeDereference(queue.Img2ImgItem.Image))
 	return err
+}
+
+func calculateGCD(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func t2iToImg2Img(textToImage *entities.TextToImageRequest) entities.ImageToImageRequest {

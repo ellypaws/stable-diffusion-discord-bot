@@ -17,6 +17,7 @@ import (
 	"stable_diffusion_bot/stable_diffusion_api"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var commandHandlers = map[Command]func(b *botImpl, s *discordgo.Session, i *discordgo.InteractionCreate){
@@ -838,6 +839,9 @@ func (b *botImpl) processRawModal(s *discordgo.Session, i *discordgo.Interaction
 
 	var params entities.RawParams
 	if message, err := b.botSession.InteractionResponse(i.Interaction); err != nil {
+		handlers.Errors[handlers.ErrorResponse](s, i.Interaction, "Error retrieving modal data.", err)
+		return
+	} else {
 		if p, ok := modalDefault[message.Interaction.ID]; ok {
 			params = p
 			delete(modalDefault, message.Interaction.ID)
@@ -859,7 +863,13 @@ func (b *botImpl) processRawModal(s *discordgo.Session, i *discordgo.Interaction
 }
 
 func (b *botImpl) jsonToQueue(i *discordgo.InteractionCreate, params entities.RawParams) error {
-	queue := &entities.QueueItem{}
+	queue := &entities.QueueItem{
+		ImageGenerationRequest: &entities.ImageGenerationRequest{
+			GenerationInfo: entities.GenerationInfo{
+				CreatedAt: time.Now(),
+			},
+		},
+	}
 	if params.UseDefault {
 		queue = b.imagineQueue.NewQueueItem()
 	}
@@ -867,7 +877,7 @@ func (b *botImpl) jsonToQueue(i *discordgo.InteractionCreate, params entities.Ra
 	queue.Type = imagine_queue.ItemTypeRaw
 	queue.DiscordInteraction = i.Interaction
 
-	queue.Raw = &entities.TextToImageRaw{TextToImageRequest: queue.TextToImageRequest, RawParams: params}
+	queue.Raw = &entities.TextToImageRaw{TextToImageRequest: queue.ImageGenerationRequest.TextToImageRequest, RawParams: params}
 
 	// Override Scripts by unmarshalling to Raw
 	err := json.Unmarshal(params.Blob, &queue.Raw)
@@ -875,12 +885,14 @@ func (b *botImpl) jsonToQueue(i *discordgo.InteractionCreate, params entities.Ra
 		return err
 	}
 
+	queue.ImageGenerationRequest.TextToImageRequest = queue.Raw.TextToImageRequest
+
 	position, err := b.imagineQueue.AddImagine(queue)
 	if err != nil {
 		return err
 	}
 	handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(b.botSession, i.Interaction,
-		fmt.Sprintf("I'm dreaming something up for you. You are currently #%d in line.", position),
+		fmt.Sprintf("I'm dreaming something up for you. You are currently #%d in line. Defaults: %v", position, params.UseDefault),
 	)
 	return nil
 }

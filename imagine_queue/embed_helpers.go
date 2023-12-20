@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// Deprecated: use imageEmbedFromBuffers instead. Use retrieveImagesFromResponse to get the images
 func imageEmbedFromAttachment(webhook *discordgo.WebhookEdit, embed *discordgo.MessageEmbed, image *entities.MessageAttachment, thumbnail *bytes.Reader) (err error) {
 	if embed == nil {
 		embed = &discordgo.MessageEmbed{
@@ -384,6 +385,7 @@ func rerollVariationComponents(amount int, disable bool) *[]discordgo.MessageCom
 	return &rows
 }
 
+// Deprecated: use imageEmbedFromBuffers instead. Use retrieveImagesFromResponse to get the images
 func imageAttachmentAsThumbnail(webhook *discordgo.WebhookEdit, embed *discordgo.MessageEmbed, image *bytes.Reader, thumbnail *entities.MessageAttachment, alreadyAFile bool) (err error) {
 	if embed == nil {
 		embed = &discordgo.MessageEmbed{

@@ -241,7 +241,6 @@ func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, 
 
 	response, err := api.POST("/sdapi/v1/txt2img", req)
 	if err != nil {
-		log.Printf("Error with API POST: %s", string(req))
 		return nil, err
 	}
 	defer response.Body.Close()
@@ -287,7 +286,6 @@ func (api *apiImplementation) ImageToImageRequest(req *entities.ImageToImageRequ
 
 	response, err := api.POST("/sdapi/v1/img2img", jsonData)
 	if err != nil {
-		log.Printf("Error with API POST: %s", string(jsonData))
 		return nil, err
 	}
 	defer response.Body.Close()
@@ -491,7 +489,8 @@ func (api *apiImplementation) POST(postURL string, jsonData []byte) (*http.Respo
 	response, err := client.Do(request)
 	if err != nil {
 		log.Printf("API URL: %s", api.host+postURL)
-		log.Printf("Error with API Request: %s", string(jsonData))
+		log.Printf("Error with API Request: %v", err)
+		log.Printf("Body: %v", string(jsonData))
 		return nil, err
 	}
 	if response.StatusCode != http.StatusOK {

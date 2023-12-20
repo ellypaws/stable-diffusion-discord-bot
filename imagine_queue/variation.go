@@ -8,10 +8,22 @@ import (
 
 func (q *queueImplementation) processVariation() {
 	defer q.done()
-	c := q.currentImagine
-	request, err := q.getPreviousGeneration(c)
+	c, err := q.currentImagine, error(nil)
+	c.ImageGenerationRequest, err = q.getPreviousGeneration(c)
+	request := c.ImageGenerationRequest
 	if err != nil {
 		log.Printf("Error getting prompt for reroll: %v", err)
+		handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, err)
+		return
+	}
+
+	message := handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, c.DiscordInteraction, "Found previous generation...")
+	// store the new message to record the correct message ID in the database
+	c.DiscordInteraction.Message = message
+
+	err = q.storeMessageInteraction(c, message)
+	if err != nil {
+		log.Printf("Error storing message interaction: %v", err)
 		handlers.Errors[handlers.ErrorResponse](q.botSession, c.DiscordInteraction, err)
 		return
 	}
@@ -32,8 +44,6 @@ func (q *queueImplementation) processVariation() {
 	request.CreatedAt = time.Now()
 
 	fillBlankModels(q, request)
-
-	c.ImageGenerationRequest = request
 
 	err = q.processImagineGrid(c)
 	if err != nil {

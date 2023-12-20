@@ -87,9 +87,6 @@ func init() {
 }
 
 func main() {
-	//tools.ImageToBase64()
-	//tools.Base64ToImage()
-	//return
 	flag.Parse()
 
 	//if guildID == nil || *guildID == "" {
@@ -117,10 +114,7 @@ func main() {
 
 	if devModeFlag != nil && *devModeFlag {
 		devMode = *devModeFlag
-
 		log.Printf("Starting in development mode.. all commands prefixed with \"dev_\"")
-	} else {
-		//TODO add code to remove dev_ prefixed commands in discordgo when devModeFlag is false
 	}
 
 	var removeCommands bool

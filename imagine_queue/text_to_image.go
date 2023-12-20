@@ -86,24 +86,39 @@ func showInitialMessage(queue *entities.QueueItem, q *queueImplementation) (*dis
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 	}
 
-	message, err := q.botSession.InteractionResponseEdit(queue.DiscordInteraction, webhook)
+	message := handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, queue.DiscordInteraction, webhook)
+
+	err := q.storeMessageInteraction(queue, message)
 	if err != nil {
-		log.Printf("Error editing interaction: %v", err)
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("error retrieving message interaction: %v", err)
+	}
+
+	return embed, webhook, nil
+}
+
+func (q *queueImplementation) storeMessageInteraction(queue *entities.QueueItem, message *discordgo.Message) (err error) {
+	request := queue.ImageGenerationRequest
+
+	if queue.DiscordInteraction == nil {
+		return fmt.Errorf("queue.DiscordInteraction is nil")
+	}
+
+	if message == nil {
+		message, err = q.botSession.InteractionResponse(queue.DiscordInteraction)
+		if err != nil {
+			return err
+		}
 	}
 
 	// store message ID in c.DiscordInteraction.Message
-	if queue.DiscordInteraction != nil && queue.DiscordInteraction.Message == nil && message != nil {
-		log.Printf("Setting c.DiscordInteraction.Message to message: %v", message)
-		queue.DiscordInteraction.Message = message
-	}
+	queue.DiscordInteraction.Message = message
 
 	request.InteractionID = queue.DiscordInteraction.ID
-	request.MessageID = message.ID
+	request.MessageID = queue.DiscordInteraction.Message.ID
 	request.MemberID = queue.DiscordInteraction.Member.User.ID
 	request.SortOrder = 0
 	request.Processed = true
-	return embed, webhook, nil
+	return nil
 }
 
 func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, response *stable_diffusion_api.TextToImageResponse, embed *discordgo.MessageEmbed, webhook *discordgo.WebhookEdit) error {
@@ -122,29 +137,12 @@ func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, respon
 		Components: rerollVariationComponents(min(len(imageBuffers), totalImages), queue.Type == ItemTypeImg2Img),
 	}
 
-	if queue.Type != ItemTypeImg2Img || len(thumbnailBuffers) > 0 {
-		if err := imageEmbedFromBuffers(webhook, embed, imageBuffers[:min(len(imageBuffers), totalImages)], thumbnailBuffers); err != nil {
-			log.Printf("Error creating image embed: %v\n", err)
-			return err
-		}
-	} else {
-		// because we don't have the original webhook that contains the image file
-		var primaryImage *bytes.Reader
-		if len(imageBuffers) > 0 {
-			primaryImage = bytes.NewReader(imageBuffers[0].Bytes())
-		}
-		err := imageAttachmentAsThumbnail(webhook, embed, primaryImage, queue.Img2ImgItem.MessageAttachment, true)
-		if err != nil {
-			log.Printf("Error attaching image as thumbnail: %v", err)
-			return err
-		}
-	}
-
-	_, err := q.botSession.InteractionResponseEdit(queue.DiscordInteraction, webhook)
-	if err != nil {
-		log.Printf("Error editing interaction: %v\n", err)
+	if err := imageEmbedFromBuffers(webhook, embed, imageBuffers[:min(len(imageBuffers), totalImages)], thumbnailBuffers); err != nil {
+		log.Printf("Error creating image embed: %v\n", err)
 		return err
 	}
+
+	handlers.Responses[handlers.EditInteractionResponse].(handlers.MsgReturnType)(q.botSession, queue.DiscordInteraction, webhook)
 	return nil
 }
 
@@ -290,6 +288,7 @@ func (q *queueImplementation) updateProgressBar(queue *entities.QueueItem, gener
 
 			progressContent := imagineMessageSimple(request, queue.DiscordInteraction.Member.User, progress.Progress)
 
+			// TODO: Use handlers.Responses[handlers.EditInteractionResponse] instead and adjust to return errors
 			_, progressErr = q.botSession.InteractionResponseEdit(queue.DiscordInteraction, &discordgo.WebhookEdit{
 				Content: &progressContent,
 			})

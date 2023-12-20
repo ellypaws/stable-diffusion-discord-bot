@@ -98,6 +98,18 @@ func (q *queueImplementation) DefaultQueueItem() *entities.QueueItem {
 		defaultBatchSize = 4
 	}
 
+	defaultWidth, err := q.defaultWidth()
+	if err != nil {
+		log.Printf("Error getting default width: %v", err)
+		defaultWidth = 512
+	}
+
+	defaultHeight, err := q.defaultHeight()
+	if err != nil {
+		log.Printf("Error getting default height: %v", err)
+		defaultHeight = 512
+	}
+
 	return &entities.QueueItem{
 		Type: ItemTypeImagine,
 
@@ -106,6 +118,8 @@ func (q *queueImplementation) DefaultQueueItem() *entities.QueueItem {
 				CreatedAt: time.Now(),
 			},
 			TextToImageRequest: &entities.TextToImageRequest{
+				Width:             defaultWidth,
+				Height:            defaultHeight,
 				NegativePrompt:    DefaultNegative,
 				Steps:             20,
 				Seed:              -1,
@@ -160,8 +174,8 @@ func WithCurrentModels(api stable_diffusion_api.StableDiffusionAPI) func(*entiti
 	}
 }
 
-func (q *queueImplementation) AddImagine(item *entities.QueueItem) (int, error) {
-	q.queue <- item
+func (q *queueImplementation) AddImagine(queue *entities.QueueItem) (int, error) {
+	q.queue <- queue
 
 	linePosition := len(q.queue)
 
@@ -235,7 +249,7 @@ func (q *queueImplementation) pullNextInQueue() {
 			case ItemTypeImg2Img:
 				go q.processImg2ImgImagine()
 			case ItemTypeUpscale:
-				go q.processUpscaleImagine(q.currentImagine)
+				go q.processUpscaleImagine()
 			default:
 				handlers.Errors[handlers.ErrorResponse](q.botSession, q.currentImagine.DiscordInteraction, fmt.Errorf("unknown item type: %v", q.currentImagine.Type))
 				log.Printf("Unknown item type: %v", q.currentImagine.Type)
@@ -499,92 +513,97 @@ func betweenPtr[T cmp.Ordered](value, minimum, maximum T) *T {
 	return &out
 }
 
-func (q *queueImplementation) getPreviousGeneration(imagine *entities.QueueItem) (*entities.ImageGenerationRequest, error) {
-	interactionID := imagine.DiscordInteraction.ID
-	sortOrder := imagine.InteractionIndex
-	messageID := ""
-
-	if imagine.DiscordInteraction.Message != nil {
-		messageID = imagine.DiscordInteraction.Message.ID
+func (q *queueImplementation) getPreviousGeneration(queue *entities.QueueItem) (*entities.ImageGenerationRequest, error) {
+	if queue.DiscordInteraction == nil {
+		return nil, errors.New("interaction is nil")
 	}
+
+	if queue.DiscordInteraction.Message == nil {
+		return nil, errors.New("interaction message is nil")
+	}
+
+	interactionID := queue.DiscordInteraction.ID
+	sortOrder := queue.InteractionIndex
+	messageID := queue.DiscordInteraction.Message.ID
 
 	log.Printf("Reimagining interaction: %v, Message: %v", interactionID, messageID)
 
-	generation, err := q.imageGenerationRepo.GetByMessageAndSort(context.Background(), messageID, sortOrder)
+	var err error
+	queue.ImageGenerationRequest, err = q.imageGenerationRepo.GetByMessageAndSort(context.Background(), messageID, sortOrder)
 	if err != nil {
 		log.Printf("Error getting image generation: %v", err)
 
 		return nil, err
 	}
 
-	log.Printf("Found generation: %v", generation)
+	log.Printf("Found generation: %v", queue.ImageGenerationRequest)
 
-	return generation, nil
+	return queue.ImageGenerationRequest, nil
 }
 
 // Deprecated: use imagineMessageSimple instead
-func imagineMessageContent(generation *entities.ImageGenerationRequest, user *discordgo.User, progress float64) string {
+func imagineMessageContent(request *entities.ImageGenerationRequest, user *discordgo.User, progress float64) string {
 	var out = strings.Builder{}
 
-	seedString := fmt.Sprintf("%d", generation.Seed)
+	seedString := fmt.Sprintf("%d", request.Seed)
 	if seedString == "-1" {
 		seedString = "at random(-1)"
 	}
 
 	out.WriteString(fmt.Sprintf("<@%s> asked me to imagine with step: `%d` cfg: `%s` seed: `%s` sampler: `%s`",
 		user.ID,
-		generation.Steps,
-		strconv.FormatFloat(generation.CFGScale, 'f', 1, 64),
+		request.Steps,
+		strconv.FormatFloat(request.CFGScale, 'f', 1, 64),
 		seedString,
-		generation.SamplerName,
+		request.SamplerName,
 	))
 
-	out.WriteString(fmt.Sprintf(" `%d x %d`", generation.Width, generation.Height))
+	out.WriteString(fmt.Sprintf(" `%d x %d`", request.Width, request.Height))
 
-	if generation.EnableHr == true {
+	if request.EnableHr == true {
 		// " -> (x %x) = %d x %d"
 		out.WriteString(fmt.Sprintf(" -> (x `%s` by hires.fix) = `%d x %d`",
-			strconv.FormatFloat(generation.HrScale, 'f', 1, 64),
-			generation.HrResizeX,
-			generation.HrResizeY),
+			strconv.FormatFloat(request.HrScale, 'f', 1, 64),
+			request.HrResizeX,
+			request.HrResizeY),
 		)
 	}
 
-	if ptrStringNotBlank(generation.Checkpoint) {
-		out.WriteString(fmt.Sprintf("\n**Checkpoint**: `%v`", *generation.Checkpoint))
+	if ptrStringNotBlank(request.Checkpoint) {
+		out.WriteString(fmt.Sprintf("\n**Checkpoint**: `%v`", *request.Checkpoint))
 	}
 
-	if ptrStringNotBlank(generation.VAE) {
-		out.WriteString(fmt.Sprintf("\n**VAE**: `%v`", *generation.VAE))
+	if ptrStringNotBlank(request.VAE) {
+		out.WriteString(fmt.Sprintf("\n**VAE**: `%v`", *request.VAE))
 	}
 
-	if ptrStringNotBlank(generation.Hypernetwork) {
-		if ptrStringNotBlank(generation.VAE) {
+	if ptrStringNotBlank(request.Hypernetwork) {
+		if ptrStringNotBlank(request.VAE) {
 			out.WriteString(" ")
 		} else {
 			out.WriteString("\n")
 		}
-		out.WriteString(fmt.Sprintf("**Hypernetwork**: `%v`", *generation.Hypernetwork))
+		out.WriteString(fmt.Sprintf("**Hypernetwork**: `%v`", *request.Hypernetwork))
 	}
 
 	if progress >= 0 && progress < 1 {
 		out.WriteString(fmt.Sprintf("\n**Progress**:\n```ansi\n%v\n```", p.Get().ViewAs(progress)))
 	}
 
-	out.WriteString(fmt.Sprintf("\n```\n%s\n```", generation.Prompt))
+	out.WriteString(fmt.Sprintf("\n```\n%s\n```", request.Prompt))
 
-	if generation.Scripts.ADetailer != nil && len(generation.Scripts.ADetailer.Args) > 0 {
+	if request.Scripts.ADetailer != nil && len(request.Scripts.ADetailer.Args) > 0 {
 		var models []string
-		for _, v := range generation.Scripts.ADetailer.Args {
+		for _, v := range request.Scripts.ADetailer.Args {
 			models = append(models, v.AdModel)
 		}
 		out.WriteString(fmt.Sprintf("\n**ADetailer**: [%v]", strings.Join(models, ", ")))
 	}
 
-	if generation.Scripts.ControlNet != nil && len(generation.Scripts.ControlNet.Args) > 0 {
+	if request.Scripts.ControlNet != nil && len(request.Scripts.ControlNet.Args) > 0 {
 		var preprocessor []string
 		var model []string
-		for _, v := range generation.Scripts.ControlNet.Args {
+		for _, v := range request.Scripts.ControlNet.Args {
 			preprocessor = append(preprocessor, v.Module)
 			model = append(model, v.Model)
 		}
@@ -597,24 +616,24 @@ func imagineMessageContent(generation *entities.ImageGenerationRequest, user *di
 	return out.String()
 }
 
-func imagineMessageSimple(generation *entities.ImageGenerationRequest, user *discordgo.User, progress float64) string {
+func imagineMessageSimple(request *entities.ImageGenerationRequest, user *discordgo.User, progress float64) string {
 	var out = strings.Builder{}
 
-	seedString := fmt.Sprintf("%d", generation.Seed)
+	seedString := fmt.Sprintf("%d", request.Seed)
 	if seedString == "-1" {
 		seedString = "at random(-1)"
 	}
 
 	out.WriteString(fmt.Sprintf("<@%s> asked me to imagine", user.ID))
 
-	out.WriteString(fmt.Sprintf(" `%d x %d`", generation.Width, generation.Height))
+	out.WriteString(fmt.Sprintf(" `%d x %d`", request.Width, request.Height))
 
-	if generation.EnableHr == true {
+	if request.EnableHr == true {
 		// " -> (x %x) = %d x %d"
 		out.WriteString(fmt.Sprintf(" -> (x `%s` by hires.fix) = `%d x %d`",
-			strconv.FormatFloat(generation.HrScale, 'f', 1, 64),
-			generation.HrResizeX,
-			generation.HrResizeY),
+			strconv.FormatFloat(request.HrScale, 'f', 1, 64),
+			request.HrResizeX,
+			request.HrResizeY),
 		)
 	}
 
@@ -629,21 +648,21 @@ func imagineMessageSimple(generation *entities.ImageGenerationRequest, user *dis
 }
 
 // lookupModel searches through []stable_diffusion_api.Cacheable models to find the model to load
-func (q *queueImplementation) lookupModel(generation *entities.ImageGenerationRequest, config *entities.Config, c []stable_diffusion_api.Cacheable) (POST entities.Config) {
+func (q *queueImplementation) lookupModel(request *entities.ImageGenerationRequest, config *entities.Config, c []stable_diffusion_api.Cacheable) (POST entities.Config) {
 	for _, c := range c {
 		var toLoad *string
 		var loadedModel *string
 		switch c.(type) {
 		case *stable_diffusion_api.SDModels:
-			toLoad = generation.Checkpoint
+			toLoad = request.Checkpoint
 			loadedModel = config.SDModelCheckpoint
 			//log.Printf("Checkpoint: %v, loaded: %v", safeDereference(toLoad), safeDereference(loadedModel))
 		case *stable_diffusion_api.VAEModels:
-			toLoad = generation.VAE
+			toLoad = request.VAE
 			loadedModel = config.SDVae
 			//log.Printf("VAE: %v, loaded: %v", safeDereference(toLoad), safeDereference(loadedModel))
 		case *stable_diffusion_api.HypernetworkModels:
-			toLoad = generation.Hypernetwork
+			toLoad = request.Hypernetwork
 			loadedModel = config.SDHypernetwork
 			//log.Printf("Hypernetwork: %v, loaded: %v", safeDereference(toLoad), safeDereference(loadedModel))
 		}
