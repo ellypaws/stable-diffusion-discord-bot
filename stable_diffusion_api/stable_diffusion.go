@@ -244,13 +244,13 @@ func (api *apiImplementation) TextToImageRaw(req []byte) (*entities.TextToImageR
 
 	response, err := api.POST("/sdapi/v1/txt2img", req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error with POST request: %w", err)
 	}
 	defer response.Body.Close()
 
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
 
 	return entities.JSONToTextToImageResponse(body)

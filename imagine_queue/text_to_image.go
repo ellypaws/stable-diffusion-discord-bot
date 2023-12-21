@@ -20,12 +20,11 @@ func (q *queueImplementation) processImagineGrid(queue *entities.QueueItem) erro
 	config, err := q.stableDiffusionAPI.GetConfig()
 	originalConfig := config
 	if err != nil {
-		log.Printf("Error getting config: %v", err)
-		return err
+		return fmt.Errorf("error getting config: %w", err)
 	} else {
 		config, err = q.updateModels(request, queue, config)
 		if err != nil {
-			return err
+			return fmt.Errorf("error updating models: %w", err)
 		}
 	}
 
@@ -38,7 +37,7 @@ func (q *queueImplementation) processImagineGrid(queue *entities.QueueItem) erro
 
 	request, err = q.recordToRepository(request, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("error recording to repository: %v", err)
 	}
 
 	generationDone := make(chan bool)
@@ -50,12 +49,11 @@ func (q *queueImplementation) processImagineGrid(queue *entities.QueueItem) erro
 		response, err := q.textInference(queue)
 		generationDone <- true
 		if err != nil {
-			return err
+			return fmt.Errorf("error inferencing generation: %v", err)
 		}
 
 		if response == nil {
-			log.Printf("Response of type %v is nil! Returned error:%v", queue.Type, err)
-			return err
+			return fmt.Errorf("response of type %v is nil: %v", queue.Type, err)
 		}
 
 		q.recordSeeds(response, request, config)
@@ -226,8 +224,7 @@ func (q *queueImplementation) textInference(queue *entities.QueueItem) (response
 		} else {
 			marshal, marshalErr := q.currentImagine.Raw.Marshal()
 			if marshalErr != nil {
-				log.Printf("Error marshalling raw: %v", marshalErr)
-				return nil, marshalErr
+				return nil, fmt.Errorf("error marshalling raw: %w", marshalErr)
 			}
 			response, err = q.stableDiffusionAPI.TextToImageRaw(marshal)
 		}
