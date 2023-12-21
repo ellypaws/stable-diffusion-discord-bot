@@ -6,7 +6,10 @@
 
 package entities
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 func UnmarshalTextToImageRequest(data []byte) (TextToImageRequest, error) {
 	var r TextToImageRequest
@@ -92,4 +95,92 @@ type TextToImageRequest struct {
 	SubseedStrength                   float64           `json:"subseed_strength,omitempty"`
 	Tiling                            *bool             `json:"tiling,omitempty"`
 	Width                             int               `json:"width,omitempty"`
+}
+
+func UnmarshalTextToImageResponse(data []byte) (TextToImageResponse, error) {
+	var r TextToImageResponse
+	err := json.Unmarshal(data, &r)
+	return r, err
+}
+
+func (r *TextToImageResponse) Marshal() ([]byte, error) {
+	return json.Marshal(r)
+}
+
+func UnmarshalTextToImageJSONResponse(data []byte) (TextToImageJSONResponse, error) {
+	var r TextToImageJSONResponse
+	err := json.Unmarshal(data, &r)
+	return r, err
+}
+
+func JSONToTextToImageResponse(data []byte) (*TextToImageResponse, error) {
+	r, err := UnmarshalTextToImageJSONResponse(data)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshalling TextToImageJSONResponse: %w", err)
+	}
+	var info Info
+	err = json.Unmarshal([]byte(r.Info), &info)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshalling Info: %w", err)
+	}
+	return &TextToImageResponse{
+		Images:     r.Images,
+		Seeds:      info.AllSeeds,
+		Subseeds:   info.AllSubseeds,
+		Parameters: r.Parameters,
+		Info:       info,
+	}, err
+}
+
+type TextToImageJSONResponse struct {
+	Images     []string       `json:"images"`
+	Parameters TextToImageRaw `json:"parameters"`
+	Info       string         `json:"info"`
+}
+
+type TextToImageResponse struct {
+	Images     []string       `json:"images"`
+	Seeds      []int64        `json:"seeds"`
+	Subseeds   []int64        `json:"subseeds"`
+	Parameters TextToImageRaw `json:"parameters"`
+	Info       Info           `json:"info"`
+}
+
+type Info struct {
+	Prompt                        string                 `json:"prompt"`
+	AllPrompts                    []string               `json:"all_prompts"`
+	NegativePrompt                string                 `json:"negative_prompt"`
+	AllNegativePrompts            []string               `json:"all_negative_prompts"`
+	Seed                          int64                  `json:"seed"`
+	AllSeeds                      []int64                `json:"all_seeds"`
+	Subseed                       int64                  `json:"subseed"`
+	AllSubseeds                   []int64                `json:"all_subseeds"`
+	SubseedStrength               float64                `json:"subseed_strength"`
+	Width                         int                    `json:"width"`
+	Height                        int                    `json:"height"`
+	SamplerName                   string                 `json:"sampler_name"`
+	CFGScale                      float64                `json:"cfg_scale"`
+	Steps                         int                    `json:"steps"`
+	BatchSize                     int                    `json:"batch_size"`
+	RestoreFaces                  bool                   `json:"restore_faces"`
+	FaceRestorationModel          any                    `json:"face_restoration_model"`
+	SDModelName                   *string                `json:"sd_model_name"`
+	SDModelHash                   *string                `json:"sd_model_hash"`
+	SDVaeName                     *string                `json:"sd_vae_name"`
+	SDVaeHash                     *string                `json:"sd_vae_hash"`
+	SeedResizeFromW               *int64                 `json:"seed_resize_from_w"`
+	SeedResizeFromH               *int64                 `json:"seed_resize_from_h"`
+	DenoisingStrength             float64                `json:"denoising_strength"`
+	ExtraGenerationParams         *ExtraGenerationParams `json:"extra_generation_params"`
+	IndexOfFirstImage             *int64                 `json:"index_of_first_image"`
+	Infotexts                     []string               `json:"infotexts"`
+	Styles                        []string               `json:"styles"`
+	JobTimestamp                  *string                `json:"job_timestamp"`
+	ClipSkip                      *int64                 `json:"clip_skip"`
+	IsUsingInpaintingConditioning *bool                  `json:"is_using_inpainting_conditioning"`
+	Version                       *string                `json:"version"`
+}
+
+type ExtraGenerationParams struct {
+	LoraHashes string `json:"Lora hashes"`
 }

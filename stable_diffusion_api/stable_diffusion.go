@@ -35,17 +35,20 @@ func (api *apiImplementation) Host() string {
 	return api.host
 }
 
+// Deprecated: Use the entities.TextToImageJSONResponse instead
 type jsonTextToImageResponse struct {
 	Images []string `json:"images"`
 	Info   string   `json:"info"`
 }
 
+// Deprecated: Use the entities.TextToImageResponse instead
 type jsonInfoResponse struct {
 	Seed        int64   `json:"seed"`
 	AllSeeds    []int64 `json:"all_seeds"`
 	AllSubseeds []int   `json:"all_subseeds"`
 }
 
+// Deprecated: Use the entities.TextToImageResponse instead
 type TextToImageResponse struct {
 	Images   []string `json:"images"`
 	Seeds    []int64  `json:"seeds"`
@@ -222,7 +225,7 @@ func (api *apiImplementation) TextToImage(req *TextToImageRequest) (*TextToImage
 	}, nil
 }
 
-func (api *apiImplementation) TextToImageRequest(req *entities.TextToImageRequest) (*TextToImageResponse, error) {
+func (api *apiImplementation) TextToImageRequest(req *entities.TextToImageRequest) (*entities.TextToImageResponse, error) {
 	jsonData, err := req.Marshal()
 	if err != nil {
 		return nil, err
@@ -231,7 +234,7 @@ func (api *apiImplementation) TextToImageRequest(req *entities.TextToImageReques
 	return api.TextToImageRaw(jsonData)
 }
 
-func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, error) {
+func (api *apiImplementation) TextToImageRaw(req []byte) (*entities.TextToImageResponse, error) {
 	if !handlers.CheckAPIAlive(api.host) {
 		return nil, errors.New(handlers.DeadAPI)
 	}
@@ -245,30 +248,12 @@ func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, 
 	}
 	defer response.Body.Close()
 
-	body, _ := io.ReadAll(response.Body)
-	respStruct := &jsonTextToImageResponse{}
-
-	err = json.Unmarshal(body, respStruct)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		log.Printf("Unexpected API response for jsonTextToImageResponse: %s", string(body))
-
 		return nil, err
 	}
 
-	infoStruct := &jsonInfoResponse{}
-
-	err = json.Unmarshal([]byte(respStruct.Info), infoStruct)
-	if err != nil {
-		log.Printf("Unexpected API response for jsonInfoResponse: %s", string(body))
-
-		return nil, err
-	}
-
-	return &TextToImageResponse{
-		Images:   respStruct.Images,
-		Seeds:    infoStruct.AllSeeds,
-		Subseeds: infoStruct.AllSubseeds,
-	}, nil
+	return entities.JSONToTextToImageResponse(body)
 }
 
 func (api *apiImplementation) ImageToImageRequest(req *entities.ImageToImageRequest) (*entities.ImageToImageResponse, error) {
@@ -290,9 +275,12 @@ func (api *apiImplementation) ImageToImageRequest(req *entities.ImageToImageRequ
 	}
 	defer response.Body.Close()
 
-	bytes, _ := io.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
 
-	return entities.UnmarshalImageToImageResponse(bytes)
+	return entities.UnmarshalImageToImageResponse(body)
 }
 
 type UpscaleRequest struct {

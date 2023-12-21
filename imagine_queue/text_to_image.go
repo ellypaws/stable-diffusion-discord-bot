@@ -121,7 +121,7 @@ func (q *queueImplementation) storeMessageInteraction(queue *entities.QueueItem,
 	return nil
 }
 
-func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, response *stable_diffusion_api.TextToImageResponse, embed *discordgo.MessageEmbed, webhook *discordgo.WebhookEdit) error {
+func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, response *entities.TextToImageResponse, embed *discordgo.MessageEmbed, webhook *discordgo.WebhookEdit) error {
 	request := queue.ImageGenerationRequest
 	totalImages := totalImageCount(request)
 
@@ -134,7 +134,7 @@ func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, respon
 	webhook = &discordgo.WebhookEdit{
 		Content:    &mention,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
-		Components: rerollVariationComponents(min(len(imageBuffers), totalImages), queue.Type == ItemTypeImg2Img),
+		Components: rerollVariationComponents(min(len(imageBuffers), totalImages), queue.Type == ItemTypeImg2Img || (queue.Raw != nil && queue.Raw.Debug)),
 	}
 
 	if err := imageEmbedFromBuffers(webhook, embed, imageBuffers[:min(len(imageBuffers), totalImages)], thumbnailBuffers); err != nil {
@@ -146,7 +146,7 @@ func (q *queueImplementation) showFinalMessage(queue *entities.QueueItem, respon
 	return nil
 }
 
-func (q *queueImplementation) recordSeeds(response *stable_diffusion_api.TextToImageResponse, generation *entities.ImageGenerationRequest, config *entities.Config) {
+func (q *queueImplementation) recordSeeds(response *entities.TextToImageResponse, generation *entities.ImageGenerationRequest, config *entities.Config) {
 	log.Printf("Seeds: %v Subseeds:%v", response.Seeds, response.Subseeds)
 	for idx := range response.Seeds {
 		subGeneration := generation
@@ -179,7 +179,7 @@ func totalImageCount(generation *entities.ImageGenerationRequest) int {
 	return totalImages
 }
 
-func retrieveImagesFromResponse(response *stable_diffusion_api.TextToImageResponse, queue *entities.QueueItem) (images, thumbnails []*bytes.Buffer) {
+func retrieveImagesFromResponse(response *entities.TextToImageResponse, queue *entities.QueueItem) (images, thumbnails []*bytes.Buffer) {
 	images = make([]*bytes.Buffer, len(response.Images))
 
 	for idx, image := range response.Images {
@@ -217,7 +217,7 @@ func retrieveImagesFromResponse(response *stable_diffusion_api.TextToImageRespon
 	return images, thumbnails
 }
 
-func (q *queueImplementation) textInference(queue *entities.QueueItem) (response *stable_diffusion_api.TextToImageResponse, err error) {
+func (q *queueImplementation) textInference(queue *entities.QueueItem) (response *entities.TextToImageResponse, err error) {
 	generation := queue.ImageGenerationRequest
 	switch queue.Type {
 	case ItemTypeRaw:

@@ -6,7 +6,6 @@ import (
 	"github.com/SpenserCai/sd-webui-discord/utils"
 	"github.com/bwmarrin/discordgo"
 	"stable_diffusion_bot/entities"
-	"stable_diffusion_bot/stable_diffusion_api"
 )
 
 // TODO: Implement separate processing for Img2Img, possibly use github.com/SpenserCai/sd-webui-go/intersvc
@@ -31,7 +30,7 @@ func (q *queueImplementation) imageToImage(generationDone chan bool, embed *disc
 		return err
 	}
 
-	err = q.showFinalMessage(queue, &stable_diffusion_api.TextToImageResponse{Images: resp.Images}, embed, webhook)
+	err = q.showFinalMessage(queue, &entities.TextToImageResponse{Images: resp.Images}, embed, webhook)
 	if err != nil {
 		return err
 	}

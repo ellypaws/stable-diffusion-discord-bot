@@ -14,8 +14,8 @@ type StableDiffusionAPI interface {
 	CachePreview(c Cacheable) (Cacheable, error)
 
 	TextToImage(req *TextToImageRequest) (*TextToImageResponse, error) // Deprecated: use TextToImageRequest instead
-	TextToImageRequest(req *entities.TextToImageRequest) (*TextToImageResponse, error)
-	TextToImageRaw(req []byte) (*TextToImageResponse, error)
+	TextToImageRequest(req *entities.TextToImageRequest) (*entities.TextToImageResponse, error)
+	TextToImageRaw(req []byte) (*entities.TextToImageResponse, error)
 	ImageToImageRequest(req *entities.ImageToImageRequest) (*entities.ImageToImageResponse, error)
 	UpscaleImage(upscaleReq *UpscaleRequest) (*UpscaleResponse, error)
 	GetCurrentProgress() (*ProgressResponse, error)
