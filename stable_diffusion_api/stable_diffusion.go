@@ -171,7 +171,7 @@ func (api *apiImplementation) TextToImage(req *TextToImageRequest) (*TextToImage
 	}
 
 	if !handlers.CheckAPIAlive(api.host) {
-		return nil, fmt.Errorf(handlers.DeadAPI)
+		return nil, errors.New(handlers.DeadAPI)
 	}
 
 	request, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
@@ -233,7 +233,7 @@ func (api *apiImplementation) TextToImageRequest(req *entities.TextToImageReques
 
 func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, error) {
 	if !handlers.CheckAPIAlive(api.host) {
-		return nil, fmt.Errorf(handlers.DeadAPI)
+		return nil, errors.New(handlers.DeadAPI)
 	}
 	if req == nil {
 		return nil, errors.New("missing request")
@@ -273,7 +273,7 @@ func (api *apiImplementation) TextToImageRaw(req []byte) (*TextToImageResponse, 
 
 func (api *apiImplementation) ImageToImageRequest(req *entities.ImageToImageRequest) (*entities.ImageToImageResponse, error) {
 	if !handlers.CheckAPIAlive(api.host) {
-		return nil, fmt.Errorf(handlers.DeadAPI)
+		return nil, errors.New(handlers.DeadAPI)
 	}
 	if req == nil {
 		return nil, errors.New("missing request")
@@ -315,7 +315,7 @@ type UpscaleResponse struct {
 
 func (api *apiImplementation) UpscaleImage(upscaleReq *UpscaleRequest) (*UpscaleResponse, error) {
 	if !handlers.CheckAPIAlive(api.host) {
-		return nil, fmt.Errorf(handlers.DeadAPI)
+		return nil, errors.New(handlers.DeadAPI)
 	}
 	if upscaleReq == nil {
 		return nil, errors.New("missing request")
@@ -431,7 +431,7 @@ type POSTConfig struct {
 
 func (api *apiImplementation) GET(getURL string) ([]byte, error) {
 	if !handlers.CheckAPIAlive(api.host) {
-		return nil, fmt.Errorf(handlers.DeadAPI)
+		return nil, errors.New(handlers.DeadAPI)
 	}
 	getURL = api.host + getURL
 
@@ -507,7 +507,7 @@ func (api *apiImplementation) POST(postURL string, jsonData []byte) (*http.Respo
 
 func (api *apiImplementation) UpdateConfiguration(config entities.Config) error {
 	if !handlers.CheckAPIAlive(api.host) {
-		return fmt.Errorf(handlers.DeadAPI)
+		return errors.New(handlers.DeadAPI)
 	}
 
 	body, err := config.Marshal()
@@ -529,6 +529,9 @@ func (api *apiImplementation) UpdateConfiguration(config entities.Config) error 
 
 // interrupt by posting to /sdapi/v1/interrupt using the POST() function
 func (api *apiImplementation) Interrupt() error {
+	if !handlers.CheckAPIAlive(api.host) {
+		return errors.New(handlers.DeadAPI)
+	}
 	_, err := api.POST("/sdapi/v1/interrupt", nil)
 	if err != nil {
 		return err
